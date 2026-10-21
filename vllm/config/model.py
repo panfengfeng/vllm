@@ -151,7 +151,7 @@ AttnTypeStr = Literal[
 class ModelConfig:
     """Configuration for the model."""
 
-    model: str = "Qwen/Qwen3-0.6B"
+    model: str = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
     """Name or path of the Hugging Face model to use. It is also used as the
     content for `model_name` tag in metrics output when `served_model_name` is
     not specified."""

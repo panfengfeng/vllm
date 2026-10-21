@@ -1,4 +1,16 @@
 <!-- markdownlint-disable MD001 MD041 -->
+> **DeepSeek-V4.1-Flash 专用分支（开发版）**
+>
+> 本分支仅开放 `DeepseekV41ForCausalLM` 和内部 `DSparkV41DraftModel`，
+> 已移除依赖闭包以外的模型源码，并关闭通用模型回退与模型注册扩展。
+> 默认权重为 `deepseek-ai/DeepSeek-V4.1-Flash-1017`，目标部署硬件为 NVIDIA B300。
+> 安装、裁剪范围、检查结果和 GPU 验收步骤见
+> [专用版说明](docs/design/deepseek_v41_specialization.md)。
+> 当前尚未通过 B300 实机验证。
+>
+> 下方保留上游项目介绍；其中的多模型支持列表和通用安装指令不代表本分支。
+> `uv pip install vllm` 安装的是上游发行版，要使用本改造需从本分支安装。
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">

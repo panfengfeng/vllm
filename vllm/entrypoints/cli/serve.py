@@ -36,8 +36,8 @@ from vllm.v1.utils import (
 
 logger = init_logger(__name__)
 
-DESCRIPTION = """Launch a local OpenAI-compatible API server to serve LLM
-completions via HTTP. Defaults to Qwen/Qwen3-0.6B if no model is specified.
+DESCRIPTION = """Launch a local OpenAI-compatible API server for DeepSeek V4.1.
+Defaults to deepseek-ai/DeepSeek-V4.1-Flash-1017 if no model is specified.
 
 Search by using: `--help=<ConfigGroup>` to explore options by section (e.g.,
 --help=ModelConfig, --help=Frontend)
