@@ -72,8 +72,6 @@ steps:
   num_devices: 2
   device: h100
   source_file_dependencies:
-  - csrc/libtorch_stable/minimax_reduce_rms_kernel.cu
-  - csrc/libtorch_stable/minimax_reduce_rms_kernel.h
   - csrc/libtorch_stable/ops.h
   - csrc/libtorch_stable/torch_bindings.cpp
   - vllm/model_executor/layers/minimax_rms_norm/
@@ -297,7 +295,6 @@ steps:
           kernels/test_fused_deepseek_v32_norm_rope.py
           kernels/test_fused_indexer_q_rope_quant.py
           kernels/test_fused_inv_rope_fp8_quant.py
-          kernels/test_fused_minimax_m3_qknorm_rope_kv_insert.py
           kernels/test_fused_quant_activation.py
           kernels/test_gate_linear_rocm_dispatch.py
           kernels/test_gemm_rs_ar.py
@@ -450,7 +447,6 @@ steps:
       - vllm/kernels/aiter_ops.py
       - vllm/platforms/rocm.py
       - vllm/model_executor/kernels/
-      - csrc/rocm/
       - vllm/v1/attention/backends/rocm_aiter_fa.py
       - tests/kernels/quant_utils.py
       - tests/kernels/utils.py
@@ -468,7 +464,6 @@ steps:
   timeout_in_minutes: 50
   source_file_dependencies:
   - csrc/quantization/cutlass_w8a8/moe/
-  - csrc/moe/
   - tests/kernels/moe
   - vllm/model_executor/layers/fused_moe/
   - vllm/distributed/device_communicators/
@@ -486,7 +481,6 @@ steps:
       timeout_in_minutes: 55
       source_file_dependencies:
       - csrc/quantization/cutlass_w8a8/moe/
-      - csrc/moe/
       - tests/kernels/moe
       - vllm/model_executor/layers/fused_moe/
       - vllm/distributed/device_communicators/
@@ -494,7 +488,6 @@ steps:
       - vllm/config
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
-      - csrc/rocm/
       - tests/kernels/utils.py
       - vllm/model_executor/layers/quantization/mxfp4.py
       - vllm/model_executor/layers/quantization/utils/quant_utils.py
@@ -552,21 +545,6 @@ steps:
     - pytest -v -s kernels/attention/test_deepgemm_attention.py
     - pytest -v -s quantization/test_cutlass_w4a16.py
 
-- label: ":nvidia: (B200) MiniMax-M3 Attention Kernels"
-  key: kernels-minimax-m3-attention-b200
-  timeout_in_minutes: 30
-  working_dir: "/vllm-workspace/"
-  device: b200-k8s
-  num_devices: 1
-  source_file_dependencies:
-  - vllm/models/minimax_m3/
-  - vllm/config/cache.py
-  - vllm/v1/kv_cache_interface.py
-  - tests/v1/attention/utils.py
-  - tests/kernels/attention/test_minimax_m3.py
-  commands:
-    - pytest -v -s tests/kernels/attention/test_minimax_m3.py
-
 - label: ":nvidia: (B200) Kernels Shard %N"
   key: kernels-b200
   timeout_in_minutes: 30
@@ -606,14 +584,11 @@ steps:
   - vllm/config/attention.py
   - vllm/v1/attention/backends/registry.py
   - vllm/_custom_ops.py
-  - csrc/libtorch_stable/fused_minimax_m3_qknorm_rope_kv_insert_kernel.cu
   - csrc/libtorch_stable/ops.h
   - csrc/libtorch_stable/torch_bindings.cpp
   - tests/kernels/attention/test_flashinfer_mla_decode.py
-  - tests/kernels/attention/test_minimax_m3_msa_cutlass_sparse_decode.py
   - tests/kernels/attention/test_cache.py
   - tests/kernels/quantization/nvfp4_utils.py
-  - tests/kernels/test_fused_minimax_m3_qknorm_rope_kv_insert.py
   - tests/kernels/mamba/test_gdn_prefill_cutedsl.py
   - tests/kernels/test_bf16x3_router_gemm_cutedsl.py
   - tests/kernels/test_ll_bf16_gemm.py
@@ -641,8 +616,6 @@ steps:
           ;;
         1)
           python3 examples/basic/offline_inference/chat.py
-          pytest -v -s tests/kernels/attention/test_minimax_m3_msa_cutlass_sparse_decode.py
-          pytest -v -s tests/kernels/test_fused_minimax_m3_qknorm_rope_kv_insert.py
           pytest -v -s tests/kernels/quantization/test_flashinfer_nvfp4_scaled_mm.py
           pytest -v -s tests/kernels/quantization/test_nvfp4_qutlass.py
           pytest -v -s tests/kernels/moe/test_mxfp4_moe.py
@@ -795,7 +768,6 @@ steps:
       depends_on:
       - image-build-amd
       source_file_dependencies:
-      - csrc/moe/
       - csrc/quantization/w8a8/cutlass/moe/
       - vllm/model_executor/layers/fused_moe/
       - tests/kernels/moe/test_deepep_moe.py
@@ -828,8 +800,6 @@ steps:
       depends_on:
       - image-build-amd
       source_file_dependencies:
-      - csrc/moe/
-      - csrc/rocm/
       - vllm/model_executor/layers/fused_moe/
       - vllm/model_executor/layers/quantization/
       - vllm/_aiter_ops.py
@@ -854,7 +824,6 @@ steps:
   num_devices: 2
   source_file_dependencies:
   - csrc/quantization/cutlass_w8a8/moe/
-  - csrc/moe/
   - tests/kernels/moe
   - vllm/model_executor/layers/fused_moe/
   - vllm/model_executor/layers/quantization/
@@ -872,8 +841,6 @@ steps:
       depends_on:
       - image-build-amd
       source_file_dependencies:
-      - csrc/moe/
-      - csrc/rocm/
       - tests/kernels/moe
       - vllm/model_executor/layers/fused_moe/
       - vllm/model_executor/layers/quantization/
@@ -897,7 +864,6 @@ steps:
   num_devices: 2
   source_file_dependencies:
   - csrc/quantization/cutlass_w8a8/moe/
-  - csrc/moe/
   - tests/kernels/moe
   - vllm/model_executor/layers/fused_moe/
   - vllm/model_executor/layers/quantization/
@@ -949,7 +915,6 @@ steps:
   depends_on:
   - image-build-amd
   source_file_dependencies:
-  - csrc/rocm/
   - vllm/model_executor/layers/quantization/
   - vllm/model_executor/kernels/linear/
   - vllm/_aiter_ops.py
@@ -977,7 +942,6 @@ steps:
   depends_on:
   - image-build-amd
   source_file_dependencies:
-  - csrc/moe/
   - vllm/model_executor/layers/fused_moe/
   - tests/kernels/moe/test_deepep_moe.py
   - vllm/_aiter_ops.py

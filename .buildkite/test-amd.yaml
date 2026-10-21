@@ -825,9 +825,6 @@ steps:
   - examples/features/data_parallel/data_parallel_offline.py
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
-  - csrc/custom_quickreduce.cu
-  - csrc/ops.h
-  - csrc/torch_bindings.cpp
   - vllm/model_executor/layers/
   - vllm/entrypoints/llm.py
   - vllm/config/parallel.py
@@ -1243,7 +1240,6 @@ steps:
   working_dir: "/vllm-workspace/tests"
   source_file_dependencies:
   - csrc/quantization/
-  - csrc/rocm/
   - vllm/model_executor/layers/quantization
   - tests/kernels/quantization
   - tests/kernels/quant_utils.py
@@ -1270,8 +1266,6 @@ steps:
   working_dir: "/vllm-workspace/tests"
   source_file_dependencies:
   - csrc/quantization/cutlass_w8a8/moe/
-  - csrc/moe/
-  - csrc/rocm/
   - tests/kernels/moe
   - tests/kernels/utils.py
   - vllm/model_executor/layers/fused_moe/
@@ -1340,85 +1334,12 @@ steps:
   - vllm/platforms/rocm.py
   - tests/kernels/core/test_minimax_reduce_rms.py
   - tests/utils.py
-  - csrc/libtorch_stable/minimax_reduce_rms_kernel.cu
-  - csrc/libtorch_stable/minimax_reduce_rms_kernel.h
   - csrc/libtorch_stable/ops.h
   - csrc/libtorch_stable/torch_bindings.cpp
   - vllm/model_executor/layers/mamba/linear/minimax_linear_attn.py
   optional: true
   commands:
   - pytest -v -s kernels/core/test_minimax_reduce_rms.py
-
-- label: ":amd: (MI300) Kimi K3" # TBD
-  timeout_in_minutes: 65
-  mirror_hardwares: [amdexperimental, amdproduction, amdgfx942nightly, amdmi300]
-  dind: false
-  agent_pool: mi300_1
-  optional: true
-  working_dir: "/vllm-workspace/tests"
-  source_file_dependencies:
-  - vllm/third_party/flash_linear_attention/ops/kda.py
-  - vllm/third_party/flash_linear_attention/ops/chunk_delta_h.py
-  - vllm/third_party/flash_linear_attention/ops/l2norm.py
-  - vllm/models/kimi_k3/nvidia/kda.py
-  - vllm/models/kimi_k3/nvidia/kda_metadata.py
-  - vllm/models/kimi_k3/nvidia/ops/third_party/kda/
-  - vllm/models/kimi_k3/amd/
-  - CMakeLists.txt
-  - csrc/libtorch_stable/kimi_k3/fused_kda_decode_kernel_rocm.cu
-  - csrc/libtorch_stable/ops.h
-  - csrc/libtorch_stable/torch_bindings.cpp
-  - tests/models/kimi_k3/test_amd_attn_res.py
-  - tests/models/kimi_k3/test_amd_kda_decode.py
-  - tests/models/kimi_k3/test_kda.py
-  - tests/models/kimi_k3/test_kda_metadata.py
-  - vllm/_custom_ops.py
-  - vllm/platforms/rocm.py
-  commands:
-  # Run the ROCm AttnRes/KDA decode counterparts plus existing KDA coverage.
-  - pytest -v -s models/kimi_k3/test_amd_attn_res.py models/kimi_k3/test_amd_kda_decode.py models/kimi_k3/test_kda.py models/kimi_k3/test_kda_metadata.py
-
-- label: ":amd: (MI355) Kimi K3" # TBD
-  timeout_in_minutes: 60
-  mirror_hardwares: [amdexperimental, amdproduction, amdgfx950nightly, amdmi355]
-  dind: false
-  agent_pool: mi355_1
-  num_gpus: 1
-  optional: true
-  working_dir: "/vllm-workspace/tests"
-  source_file_dependencies:
-  - vllm/models/kimi_k3/
-  - csrc/libtorch_stable/kimi_k3/
-  - tests/models/kimi_k3/
-  - vllm/platforms/rocm.py
-  commands:
-  # Mirrors the ":amd: (MI355) Kimi K3" step generated from
-  # .buildkite/test_areas/models_basic.yaml. The ROCm KDA/AttnRes kernels are
-  # gated on gfx950, so this has to be MI355. The two kernels/ files the NVIDIA
-  # step runs are CUDA-only (they import cuda.bindings.driver), so they are
-  # deliberately left out here.
-  - pytest -v -s models/kimi_k3
-
-- label: ":amd: (MI355) Kimi K3 Multi-GPU" # TBD
-  timeout_in_minutes: 30
-  mirror_hardwares: [amdexperimental, amdproduction, amdgfx950nightly, amdmi355]
-  dind: false
-  agent_pool: mi355_4
-  num_gpus: 4
-  optional: true
-  working_dir: "/vllm-workspace/tests"
-  source_file_dependencies:
-  - vllm/models/kimi_k3/
-  - tests/models/kimi_k3/
-  - vllm/platforms/rocm.py
-  commands:
-  # The single-GPU step above skips every @multi_gpu_test case. `-m "distributed"`
-  # selects exactly those: multi_gpu_test() applies pytest.mark.distributed
-  # alongside its skipif (tests/utils.py:2080), so this picks up a new
-  # multi-GPU test anywhere in the directory without editing this list.
-  # Four GPUs run the two tp4 cases in test_amd_latent_moe_runner.py; the tp8
-  # case and the 8/16-GPU cases in test_latent_moe_tail.py still skip.
-  - pytest -v -s -m "distributed" models/kimi_k3
 
 - label: ":amd: (MI300) Mamba Kernels" # TBD
   timeout_in_minutes: 55
@@ -1446,7 +1367,6 @@ steps:
   optional: true
   working_dir: "/vllm-workspace/tests"
   source_file_dependencies:
-  - csrc/moe/
   - csrc/quantization/w8a8/cutlass/moe/
   - vllm/model_executor/layers/fused_moe/
   - tests/kernels/moe/test_deepep_moe.py
@@ -3021,7 +2941,6 @@ steps:
   - vllm/distributed/
   - vllm/_aiter_ops.py
   - vllm/_custom_ops.py
-  - csrc/rocm/skinny_gemms.cu
   - vllm/platforms/rocm.py
   commands:
   - pytest -v -s tests/kernels/test_rocm_gemm_rs_ar.py
@@ -3064,8 +2983,6 @@ steps:
   num_gpus: 2
   working_dir: "/vllm-workspace/tests"
   source_file_dependencies:
-  - csrc/moe/
-  - csrc/rocm/
   - tests/kernels/moe/
   - vllm/model_executor/layers/fused_moe/
   - vllm/model_executor/layers/quantization/
@@ -3215,9 +3132,6 @@ steps:
   optional: true
   working_dir: "/vllm-workspace/"
   source_file_dependencies:
-  - csrc/custom_quickreduce.cu
-  - csrc/ops.h
-  - csrc/torch_bindings.cpp
   - vllm/distributed/
   - vllm/model_executor/layers/
   - vllm/entrypoints/llm.py
@@ -3651,7 +3565,6 @@ steps:
       kernels/test_fused_deepseek_v32_norm_rope.py
       kernels/test_fused_indexer_q_rope_quant.py
       kernels/test_fused_inv_rope_fp8_quant.py
-      kernels/test_fused_minimax_m3_qknorm_rope_kv_insert.py
       kernels/test_fused_quant_activation.py
       kernels/test_gate_linear_rocm_dispatch.py
       kernels/test_gemm_rs_ar.py
@@ -3695,8 +3608,6 @@ steps:
   - vllm/platforms/rocm.py
   - tests/kernels/core/test_minimax_reduce_rms.py
   - tests/utils.py
-  - csrc/libtorch_stable/minimax_reduce_rms_kernel.cu
-  - csrc/libtorch_stable/minimax_reduce_rms_kernel.h
   - csrc/libtorch_stable/ops.h
   - csrc/libtorch_stable/torch_bindings.cpp
   - vllm/model_executor/layers/mamba/linear/minimax_linear_attn.py
@@ -3801,8 +3712,6 @@ steps:
   working_dir: "/vllm-workspace/tests"
   source_file_dependencies:
   - csrc/quantization/cutlass_w8a8/moe/
-  - csrc/moe/
-  - csrc/rocm/
   - tests/kernels/moe
   - tests/kernels/utils.py
   - vllm/model_executor/layers/fused_moe/
@@ -3836,8 +3745,6 @@ steps:
   optional: true
   working_dir: "/vllm-workspace/tests"
   source_file_dependencies:
-  - csrc/moe/
-  - csrc/rocm/
   - tests/kernels/moe
   - vllm/model_executor/layers/fused_moe/
   - vllm/model_executor/layers/quantization/
@@ -3895,7 +3802,6 @@ steps:
   working_dir: "/vllm-workspace/tests"
   source_file_dependencies:
   - csrc/quantization/
-  - csrc/rocm/
   - vllm/model_executor/layers/quantization
   - tests/kernels/quantization
   - tests/kernels/quant_utils.py
@@ -3943,7 +3849,6 @@ steps:
   agent_pool: mi355_dpx
   working_dir: "/vllm-workspace/tests"
   source_file_dependencies:
-  - csrc/moe/
   - vllm/model_executor/layers/fused_moe/
   - tests/kernels/moe/test_deepep_moe.py
   - vllm/_aiter_ops.py
@@ -3971,7 +3876,6 @@ steps:
   optional: true
   working_dir: "/vllm-workspace/tests"
   source_file_dependencies:
-  - csrc/moe/
   - csrc/quantization/w8a8/cutlass/moe/
   - vllm/model_executor/layers/fused_moe/
   - tests/kernels/moe/test_deepep_moe.py

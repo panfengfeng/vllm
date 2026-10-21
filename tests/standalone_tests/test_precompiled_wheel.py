@@ -13,7 +13,7 @@ from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError, URLError
 
 # setup.py executes setup() on import; load only the wheel utility class.
@@ -140,7 +140,6 @@ class TestDetermineWheelUrl(unittest.TestCase):
                 clear=True,
             ),
             patch("platform.machine", return_value="x86_64"),
-            patch.object(wheel_utils, "is_rocm_system", return_value=False),
             patch.object(
                 wheel_utils, "get_base_commit_in_main_branch", return_value=base
             ),
@@ -189,6 +188,66 @@ class TestDetermineWheelUrl(unittest.TestCase):
                 self.assertEqual(url, (location, None))
                 fetch.assert_not_called()
                 search.assert_not_called()
+
+
+class TestPrecompiledExtensionSelection(unittest.TestCase):
+    def test_empty_and_rust_only_installs_do_not_extract_cuda_extensions(self):
+        """Run setup's flag selection and extraction call without packaging."""
+        flag_names = {
+            "VLLM_TARGET_DEVICE",
+            "USE_PRECOMPILED_EXTENSIONS",
+            "USE_PRECOMPILED_RUST_FRONTEND",
+        }
+        nodes = [
+            node
+            for node in ast.parse(setup_path.read_text()).body
+            if (
+                isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id in flag_names
+                    for target in node.targets
+                )
+            )
+            or (
+                isinstance(node, ast.If)
+                and any(
+                    isinstance(child, ast.Attribute)
+                    and child.attr == "extract_precompiled_and_patch_package"
+                    for child in ast.walk(node)
+                )
+            )
+        ]
+        code = compile(ast.Module(body=nodes, type_ignores=[]), str(setup_path), "exec")
+        for target, precompiled, expected_cuda in (
+            ("cuda", True, True),
+            ("empty", True, False),
+            ("cuda", False, False),
+            ("empty", False, False),
+        ):
+            with self.subTest(target=target, precompiled=precompiled):
+                extract = Mock(return_value={})
+                exec(
+                    code,
+                    {
+                        "envs": SimpleNamespace(
+                            VLLM_TARGET_DEVICE=target,
+                            VLLM_USE_PRECOMPILED=precompiled,
+                            VLLM_USE_PRECOMPILED_RUST=not precompiled,
+                        ),
+                        "is_metadata_only_build": lambda: False,
+                        "package_data": {},
+                        "precompiled_wheel_utils": SimpleNamespace(
+                            determine_wheel_url=lambda: ("wheel.whl", None),
+                            extract_precompiled_and_patch_package=extract,
+                        ),
+                    },
+                )
+                extract.assert_called_once_with(
+                    "wheel.whl",
+                    None,
+                    extract_extensions=expected_cuda,
+                    extract_rust_frontend=True,
+                )
 
 
 if __name__ == "__main__":

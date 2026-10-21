@@ -204,7 +204,7 @@ Supported hardware: CUDA (sm80+) only, tested only on sm90 and sm100.
 **Code locations.**
 
 - Pass: [`vllm/compilation/passes/fusion/qk_norm_rope_fusion.py`](https://github.com/vllm-project/vllm/blob/main/vllm/compilation/passes/fusion/qk_norm_rope_fusion.py)
-- CUDA kernel: [`csrc/ops.h`](https://github.com/vllm-project/vllm/blob/main/csrc/ops.h) (`fused_qk_norm_rope`)
+- CUDA kernel declaration: [`csrc/libtorch_stable/ops.h`](../../csrc/libtorch_stable/ops.h) (`fused_qk_norm_rope`)
 
 ### RMSNorm + Quantization (`fuse_norm_quant`)
 

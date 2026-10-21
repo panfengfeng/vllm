@@ -30,6 +30,4 @@ run_all_patterns:
   - "vllm/__init__.py"
   - "csrc/"
   - "cmake/"
-run_all_exclude_patterns:
-  - "csrc/cpu/"
-  - "cmake/cpu_extension.cmake"
+run_all_exclude_patterns: []

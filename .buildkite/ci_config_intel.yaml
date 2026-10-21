@@ -13,10 +13,7 @@ run_all_patterns:
   - "csrc/"
   - "cmake/"
 run_all_exclude_patterns:
-  - "csrc/cpu/"
-  - "csrc/rocm/"
   - "cmake/hipify.py"
-  - "cmake/cpu_extension.cmake"
 registries: public.ecr.aws/q9t5s3a7
 repositories:
   main: "vllm-ci-test-repo"

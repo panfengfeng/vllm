@@ -17,10 +17,7 @@ run_all_patterns:
   - ".buildkite/check-torch-abi.py"
 run_all_exclude_patterns:
   - "docker/Dockerfile."
-  - "csrc/cpu/"
-  - "csrc/rocm/"
   - "cmake/hipify.py"
-  - "cmake/cpu_extension.cmake"
 registries: public.ecr.aws/q9t5s3a7
 repositories:
   main: "vllm-ci-postmerge-repo"

@@ -7,8 +7,6 @@ steps:
   device: intel_cpu
   no_plugin: true
   source_file_dependencies:
-  - csrc/cpu/
-  - cmake/cpu_extension.cmake
   - CMakeLists.txt
   - vllm/_custom_ops.py
   - tests/kernels/attention/test_cpu_attn.py
@@ -112,7 +110,6 @@ steps:
 #   device: intel_cpu
 #   no_plugin: true
 #   source_file_dependencies:
-#   - cmake/cpu_extension.cmake
 #   - setup.py
 #   - vllm/platforms/cpu.py
 #   commands:
@@ -126,7 +123,6 @@ steps:
   device: intel_cpu
   no_plugin: true
   source_file_dependencies:
-  - csrc/cpu/
   - vllm/
   - tests/models/language/generation/
   - tests/models/language/pooling/
@@ -143,7 +139,6 @@ steps:
   device: intel_cpu
   no_plugin: true
   source_file_dependencies:
-  - csrc/cpu/
   - vllm/model_executor/layers/quantization/auto_gptq.py
   - vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_w8a8_int8.py
   - vllm/model_executor/kernels/linear/mixed_precision/cpu.py
@@ -165,7 +160,6 @@ steps:
   device: intel_cpu
   no_plugin: true
   source_file_dependencies: &cpu_distributed_deps
-  - csrc/cpu/shm.cpp
   - vllm/v1/worker/cpu_worker.py
   - vllm/v1/worker/gpu_worker.py
   - vllm/v1/worker/cpu_model_runner.py
@@ -252,7 +246,6 @@ steps:
     - requirements/cpu.txt
     - requirements/build/cpu.txt
     - requirements/test/cpu.txt
-    - cmake/cpu_extension.cmake
     - vllm/model_executor/layers/utils.py
     - vllm/model_executor/kernels/linear/zentorch_utils.py
     - vllm/model_executor/kernels/linear/scaled_mm/zentorch.py

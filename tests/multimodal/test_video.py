@@ -17,7 +17,6 @@ from transformers import AutoVideoProcessor, Qwen3VLVideoProcessor
 from transformers.video_utils import VideoMetadata
 
 from vllm.assets.base import get_vllm_public_assets
-from vllm.models.minimax_m3.common.mm_preprocess import MiniMaxM3VideoBackend
 from vllm.multimodal.video import (
     PYNVVIDEOCODEC_VIDEO_BACKEND,
     VIDEO_LOADER_REGISTRY,
@@ -807,12 +806,6 @@ def test_qwen3_vl_unknown_source_fps_matches_hf(
             Qwen2VLVideoBackend,
             {"fps": 2},
             id="qwen2_5_vl",
-        ),
-        pytest.param(
-            "MiniMaxAI/MiniMax-M3",
-            MiniMaxM3VideoBackend,
-            None,
-            id="minimax_m3_vl",
         ),
     ],
 )

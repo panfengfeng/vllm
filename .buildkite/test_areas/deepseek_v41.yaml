@@ -1,34 +1,23 @@
 group: DeepSeek V4.1 Specialization
-depends_on:
-  - image-build-cpu
+depends_on: []
 steps:
-  - label: ":computer: (CPU) DeepSeek V4.1 Source Checks"
+  - label: ":computer: DeepSeek V4.1 Source Checks"
     key: deepseek-v41-source-checks
+    depends_on: []
     timeout_in_minutes: 10
     device: cpu-small
+    no_plugin: true
     source_file_dependencies:
       - .buildkite/test_areas/deepseek_v41.yaml
-      - vllm/model_executor/models/registry.py
-      - vllm/config/speculative.py
-      - vllm/transformers_utils/config.py
-      - vllm/transformers_utils/configs/deepseek_v41.py
-      - vllm/transformers_utils/model_arch_config_convertor.py
-      - vllm/model_executor/layers/dspark.py
-      - vllm/model_executor/warmup/kernel_warmup.py
-      - vllm/models/deepseek_v4/__init__.py
-      - vllm/v1/spec_decode/draft_attention.py
-      - vllm/v1/worker/gpu/spec_decode/
+      - .buildkite/scripts/run-deepseek-v41-source-checks.sh
+      - CMakeLists.txt
+      - setup.py
+      - cmake/
+      - csrc/
+      - vllm/
       - tools/prune_models.py
-      - tests/standalone_tests/test_deepseek_v41_arch_config.py
-      - tests/standalone_tests/test_deepseek_v41_hf_config.py
-      - tests/standalone_tests/test_deepseek_v41_registry.py
-      - tests/standalone_tests/test_deepseek_v41_shared_imports.py
-      - tests/standalone_tests/test_deepseek_v41_speculative.py
-      - tests/standalone_tests/test_deepseek_v41_speculator_dispatch.py
-      - tests/standalone_tests/test_deepseek_v41_warmup.py
+      - tests/standalone_tests/
+      - tests/test_cmake_utils.py
       - tests/tools/test_prune_models.py
     commands:
-      - uv venv --python 3.12 .venv
-      - uv pip install --python .venv/bin/python pytest
-      - .venv/bin/python -m pytest --confcutdir=standalone_tests standalone_tests/test_deepseek_v41_*.py -q
-      - PYTHONPATH=.. .venv/bin/python -m pytest --confcutdir=tools tools/test_prune_models.py -q
+      - bash .buildkite/scripts/run-deepseek-v41-source-checks.sh

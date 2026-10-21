@@ -11,7 +11,6 @@ from vllm.distributed.communication_op import tensor_model_parallel_all_reduce
 from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
-    get_tp_group,
 )
 from vllm.logger import init_logger
 from vllm.model_executor.custom_op import CustomOp
@@ -20,11 +19,8 @@ from vllm.utils.torch_utils import direct_register_custom_op
 
 logger = init_logger(__name__)
 
-# Max number of tokens supported by the Lamport fused allreduce+RMSNorm kernel.
-# Larger batches fall back to the eager allreduce + RMSNorm path.
+# Larger AITER batches use the all-reduce + RMSNorm fallback.
 MINIMAX_QK_NORM_MAX_TOKEN_NUM = 2048
-
-_MINIMAX_FUSED_AR_RMS_QK = getattr(torch.ops._C, "minimax_allreduce_rms_qk", None)
 
 
 def _all_reduce_variance(var: torch.Tensor) -> torch.Tensor:
@@ -215,27 +211,9 @@ def _minimax_qk_norm_fusion(
     tp_rank: int,
     tp_world: int,
     eps: float,
-    workspace: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert qkv.ndim == 2
     num_tokens = qkv.shape[0]
-    if (
-        workspace is not None
-        and tp_world > 1
-        and num_tokens <= MINIMAX_QK_NORM_MAX_TOKEN_NUM
-        and _MINIMAX_FUSED_AR_RMS_QK is not None
-    ):
-        return _MINIMAX_FUSED_AR_RMS_QK(
-            qkv,
-            q_weight,
-            k_weight,
-            workspace,
-            q_size,
-            kv_size,
-            tp_rank,
-            tp_world,
-            eps,
-        )
     # ROCm AITER fused QK-norm + AllReduce; skips unaligned shapes.
     if tp_world > 1 and num_tokens <= MINIMAX_QK_NORM_MAX_TOKEN_NUM:
         pack_size = 16 // qkv.element_size()
@@ -261,7 +239,6 @@ def _minimax_qk_norm_fusion_fake(
     tp_rank: int,
     tp_world: int,
     eps: float,
-    workspace: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert qkv.ndim == 2
     num_tokens = qkv.shape[0]
@@ -304,34 +281,6 @@ class MiniMaxText01RMSNormTP(CustomOp):
             shard_rank=self.weight_shard_rank,
         )
         self.variance_epsilon = eps
-
-        self.workspace = None
-        if _MINIMAX_FUSED_AR_RMS_QK is not None and self.tp_world > 1:
-            from .lamport_workspace import (
-                get_allreduce_workspace,
-            )
-
-            # The Lamport workspace exchanges CUDA IPC handles and enables peer
-            # access between GPUs. This requires P2P (IPC peer access) to be
-            # available; on topologies where it is not (e.g. consumer PCIe cards
-            # with P2P disabled in the driver), allocation raises. Fall back to
-            # the eager allreduce + RMSNorm path instead of failing model load.
-            try:
-                self.workspace = get_allreduce_workspace(
-                    rank=self.tp_rank,
-                    world_size=self.tp_world,
-                    max_tokens=MINIMAX_QK_NORM_MAX_TOKEN_NUM,
-                    process_group=get_tp_group().cpu_group,
-                )
-            except Exception as e:
-                logger.warning_once(
-                    "Failed to initialize MiniMax fused allreduce+RMSNorm "
-                    "Lamport workspace: %s. This is expected on GPUs without "
-                    "P2P (IPC peer access) support. Falling back to the eager "
-                    "allreduce + RMSNorm path.",
-                    e,
-                )
-                self.workspace = None
 
     @staticmethod
     def weight_loader(
@@ -415,7 +364,6 @@ class MiniMaxText01RMSNormTP(CustomOp):
             q_norm.tp_rank,
             q_norm.tp_world,
             q_norm.variance_epsilon,
-            q_norm.workspace,
         )
         _, _, v = qkv.split([q_size, kv_size, kv_size], dim=-1)
         return q, k, v

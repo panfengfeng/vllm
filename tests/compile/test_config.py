@@ -307,9 +307,6 @@ def test_splitting_ops_dynamic():
     assert config.compilation_config.splitting_ops_contain_attention()
     splitting_ops = config.compilation_config.splitting_ops
     assert splitting_ops is not None
-    assert {
-        "vllm::qwen_gdn_attention_core_fused_norm_packed",
-    } <= set(splitting_ops)
 
     # When use_inductor_graph_partition=True
     config = VllmConfig(

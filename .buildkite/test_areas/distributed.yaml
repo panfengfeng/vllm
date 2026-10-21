@@ -508,9 +508,6 @@ steps:
       - examples/features/data_parallel/data_parallel_offline.py
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
-      - csrc/custom_quickreduce.cu
-      - csrc/ops.h
-      - csrc/torch_bindings.cpp
       - vllm/model_executor/layers/
       - vllm/entrypoints/llm.py
       - vllm/config/parallel.py
@@ -610,7 +607,6 @@ steps:
       - vllm/distributed/
       - vllm/_aiter_ops.py
       - vllm/_custom_ops.py
-      - csrc/rocm/skinny_gemms.cu
       - vllm/platforms/rocm.py
       commands:
       - pytest -v -s tests/kernels/test_rocm_gemm_rs_ar.py

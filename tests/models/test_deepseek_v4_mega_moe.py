@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from vllm.models.deepseek_v4.nvidia.dspark import DSparkDeepseekV4ForCausalLM
+from vllm.models.deepseek_v4.nvidia.mtp import DeepSeekV4MTP
 
 from vllm.model_executor.layers.fused_moe.deep_gemm_mega_moe import (
     DeepGemmSm100MegaMoEBackend,
@@ -15,7 +17,6 @@ from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
 from vllm.model_executor.layers.quantization.utils.fp8_utils import (
     deepgemm_post_process_weight_scale_block,
 )
-from vllm.models.deepseek_v4.nvidia.dspark import DSparkDeepseekV4ForCausalLM
 from vllm.models.deepseek_v4.nvidia.model import (
     DeepseekV4ForCausalLM,
     DeepseekV4MegaMoEExperts,
@@ -23,7 +24,6 @@ from vllm.models.deepseek_v4.nvidia.model import (
     make_deepseek_v4_expert_params_mapping,
     prepare_mega_gate_routing_metadata,
 )
-from vllm.models.deepseek_v4.nvidia.mtp import DeepSeekV4MTP
 from vllm.models.deepseek_v4.nvidia.ops.prepare_megamoe import prepare_megamoe_inputs
 from vllm.models.deepseek_v41.common.mm_preprocess import IMAGE_SENTINEL_BASE_ID
 from vllm.models.deepseek_v41.nvidia.model import DeepseekV4MoE as DeepseekV41MoE
@@ -310,18 +310,10 @@ def test_deepseek_v4_mega_moe_ue8m0_uint8_to_float():
     assert decoded[3].item() == 2.0
 
 
-@pytest.mark.parametrize("use_kimi", [False, True])
-def test_deep_gemm_mega_moe_capture_precedes_eplb(monkeypatch, use_kimi):
+def test_deep_gemm_mega_moe_capture_precedes_eplb(monkeypatch):
     experts_cls = DeepseekV4MegaMoEExperts
-    if use_kimi:
-        from vllm.models.kimi_k3.nvidia.model import KimiK3MegaMoEExperts
-
-        experts_cls = KimiK3MegaMoEExperts
-
     experts = experts_cls.__new__(experts_cls)
     torch.nn.Module.__init__(experts)
-    if use_kimi:
-        experts.synchronize_first_launch = lambda: None
     experts.prefix = "model.layers.3.ffn.experts"
     experts.max_num_tokens = 4
     experts.capture_fn = None
