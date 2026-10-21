@@ -10,10 +10,17 @@ steps:
       - .buildkite/test_areas/deepseek_v41.yaml
       - vllm/model_executor/models/registry.py
       - vllm/config/speculative.py
+      - vllm/transformers_utils/config.py
+      - vllm/transformers_utils/configs/deepseek_v41.py
+      - vllm/transformers_utils/model_arch_config_convertor.py
+      - vllm/model_executor/layers/dspark.py
       - vllm/model_executor/warmup/kernel_warmup.py
       - vllm/models/deepseek_v4/__init__.py
+      - vllm/v1/spec_decode/draft_attention.py
       - vllm/v1/worker/gpu/spec_decode/
       - tools/prune_models.py
+      - tests/standalone_tests/test_deepseek_v41_arch_config.py
+      - tests/standalone_tests/test_deepseek_v41_hf_config.py
       - tests/standalone_tests/test_deepseek_v41_registry.py
       - tests/standalone_tests/test_deepseek_v41_shared_imports.py
       - tests/standalone_tests/test_deepseek_v41_speculative.py

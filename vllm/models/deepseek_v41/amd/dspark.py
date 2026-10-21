@@ -2,8 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """DSpark draft model for DeepSeek-V4.1 (semi-autoregressive speculative decoding).
 
-See: qwen3_dspark.py for base architecture. This one is specialized to the
-DSV4.1 DSpark, which reuses the target model's architecture similarly to MTP.
+DSV4.1 DSpark reuses the target model's architecture similarly to MTP.
 Its weights ship in the target checkpoint under the ``mtp.{0,1,2}.*`` prefix.
 
 To implement non-causal attention, we leverage the sparse attention implementation to
@@ -25,6 +24,7 @@ from vllm.distributed import (
 from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.logger import init_logger
 from vllm.model_executor.kernels.mhc.torch import mhc_post_torch
+from vllm.model_executor.layers.dspark import DSparkConfidenceHead, DSparkMarkovHead
 from vllm.model_executor.layers.fused_moe import (
     fused_moe_make_expert_params_mapping,
 )
@@ -36,10 +36,6 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
 )
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
-from vllm.model_executor.models.qwen3_dspark import (
-    DSparkConfidenceHead,
-    DSparkMarkovHead,
-)
 from vllm.model_executor.models.utils import maybe_prefix
 from vllm.models.common.ops.sequence_parallel import (
     sp_all_gather,

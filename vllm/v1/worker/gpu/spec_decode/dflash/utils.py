@@ -15,7 +15,7 @@ from vllm.v1.worker.gpu.spec_decode.utils import get_pp_safe_draft_load_config
 
 def load_dflash_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Module:
     from vllm.compilation.backends import set_model_tag
-    from vllm.model_executor.models.qwen3_dflash import (
+    from vllm.v1.spec_decode.draft_attention import (
         dflash_has_any_non_causal,
     )
 

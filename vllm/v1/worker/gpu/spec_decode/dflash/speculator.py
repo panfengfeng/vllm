@@ -65,7 +65,7 @@ class DFlashSpeculator(DraftModelSpeculator):
             self.draft_model_config.hf_config
         )
 
-        from vllm.model_executor.models.qwen3_dflash import dflash_has_any_non_causal
+        from vllm.v1.spec_decode.draft_attention import dflash_has_any_non_causal
 
         self.requires_non_causal = dflash_has_any_non_causal(
             self.draft_model_config.hf_config

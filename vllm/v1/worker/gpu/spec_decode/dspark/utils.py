@@ -58,8 +58,8 @@ def load_dspark_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
 
     from vllm.compilation.backends import set_model_tag
     from vllm.model_executor.model_loader import get_model
-    from vllm.model_executor.models.qwen3_dflash import dflash_has_any_non_causal
     from vllm.model_executor.models.utils import get_draft_quant_config
+    from vllm.v1.spec_decode.draft_attention import dflash_has_any_non_causal
     from vllm.v1.worker.gpu.spec_decode.eagle.utils import (
         _should_share,
         get_target_lm_head,

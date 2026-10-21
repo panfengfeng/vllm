@@ -6,13 +6,12 @@ import os
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict
-from functools import cache, partial, wraps
+from functools import cache, partial
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
 import huggingface_hub
 import torch
-import transformers.configuration_utils as hf_configuration_utils
 from huggingface_hub import constants
 from safetensors.torch import _TYPES as _SAFETENSORS_TO_TORCH_DTYPE
 from transformers import GenerationConfig, PreTrainedConfig
@@ -79,83 +78,16 @@ class LazyConfigDict(dict):
 
 
 _CONFIG_REGISTRY: dict[str, type[PreTrainedConfig]] = LazyConfigDict(
-    bagel="BagelConfig",
-    bailing_moe_v3_vl="BailingMoeV3VLConfig",
-    chatglm="ChatGLMConfig",
-    modernvbert="ColModernVBertConfig",
-    colpali="ColPaliConfig",
-    colqwen3="ColQwen3Config",
-    ops_colqwen3="OpsColQwen3Config",
-    qwen3_vl_nemotron_embed="Qwen3VLNemotronEmbedConfig",
-    cosmos3_edge="Cosmos3EdgeConfig",
-    deepseek_vl_v2="DeepseekVLV2Config",
-    deepseek_v32="DeepseekV3Config",
     deepseek_v4="DeepseekV4Config",
-    dots3_note="Dots3NoteConfig",
-    k3_dspark="K3DSparkConfig",
-    funaudiochat="FunAudioChatConfig",
-    hy_v4="HYV4Config",
-    hyperclovax="HyperCLOVAXConfig",  # Upstream class, hub remote code is broken
-    isaac="IsaacConfig",
-    kimi_k2="DeepseekV3Config",  # Kimi K2 uses same architecture as DeepSeek V3
-    kimi_linear="KimiLinearConfig",
-    kimi_vl="KimiVLConfig",
-    kimi_k25="Kimi_K25Config",  # Upstream class, hub remote code uses old schema
-    muse_glimmer="MuseGlimmerConfig",
-    muse_glimmer_text="MuseGlimmerTextConfig",
-    muse_glimmer_vision="MuseGlimmerVisionConfig",
-    muse_glimmer_assistant="MuseGlimmerAssistantConfig",
-    kimi_k3="KimiK3Config",
-    RefinedWeb="RWConfig",  # For tiiuae/falcon-40b(-instruct)
-    RefinedWebModel="RWConfig",  # For tiiuae/falcon-7b(-instruct)
-    mlp_speculator="MLPSpeculatorConfig",
-    medusa="MedusaConfig",
-    midashenglm="MiDashengLMConfig",
-    minimax_m3_vl="MiniMaxM3Config",
-    minimax_m3_mtp="MiniMaxM3MTPConfig",
-    moondream3="Moondream3Config",
-    moss_transcribe_diarize="MossTranscribeDiarizeConfig",
+    deepseek_v41="DeepseekV41Config",
     eagle="EAGLEConfig",
     speculators="SpeculatorsConfig",
-    openvla="OpenVLAConfig",
-    ovis="OvisConfig",
-    ultravox="UltravoxConfig",
-    step3_vl="Step3VLConfig",
-    step3_text="Step3TextConfig",
-    step3p5="Step3p5Config",
-    qianfan_ocr="QianfanOCRConfig",
-    qwen3_asr="Qwen3ASRConfig",
-    **{"unlimited-ocr": "UnlimitedOCRConfig"},
-    **{"deepseek_v41": "DeepseekV41Config"},
-    inkling_mm_model="InklingMMConfig",
-    inkling_model="InklingModelConfig",
 )
 
-_SPECULATIVE_DECODING_CONFIGS: set[str] = {"eagle", "speculators", "medusa"}
-
-# Checkpoints whose config.json has no model_type, only remote code in auto_map
-_ARCHITECTURE_TO_MODEL_TYPE: dict[str, str] = {
-    "LongcatFlashForCausalLM": "longcat_flash",
-    "LongcatFlashNgramForCausalLM": "longcat_flash",
-}
-
-_PATCH_HF_VALIDATE_ROPE: set[str] = {"sarvam_mla"}
-
-# Model types whose checkpoints carry shared RoPE parameters alongside the
-# per-layer-type dicts. Since transformers 5.17, `validate_rope` treats every
-# top-level value of such a dict as a layer's parameters and raises on the
-# shared ones. `laguna` gets them injected by `convert_rope_params_to_dict`;
-# `gemma4_text` ships them in the checkpoint itself.
-_PATCH_HF_NESTED_ROPE_VALIDATION: set[str] = {"laguna", "gemma4_text"}
+_SPECULATIVE_DECODING_CONFIGS: set[str] = {"eagle", "speculators"}
 
 _CONFIG_ATTRS_MAPPING: dict[str, str] = {
     "llm_config": "text_config",
-}
-
-_AUTO_CONFIG_KWARGS_OVERRIDES: dict[str, dict[str, Any]] = {
-    "internvl_chat": {"has_no_defaults_at_init": True},
-    "Llama_Nemotron_Nano_VL": {"attn_implementation": "eager"},
-    "NVLM_D": {"has_no_defaults_at_init": True},
 }
 
 
@@ -196,102 +128,6 @@ def _mistral_patch_hf_hub_constants() -> Iterator[None]:
         constants.SAFETENSORS_INDEX_FILE = hf_safetensors_index_file
 
 
-def _install_hf_config_validator(
-    name: str, validator: Callable, supersedes: Callable
-) -> None:
-    """Replace a ``PreTrainedConfig`` validator on every ``@strict`` snapshot.
-
-    ``@strict`` snapshots each ``validate_*`` method into ``__class_validators__``
-    at class creation and automatic post-``__init__`` validation dispatches off
-    that frozen list, so assigning the class attribute alone only affects
-    explicit ``config.validate_*()`` calls. Every ``@strict``-decorated config
-    class owns a snapshot, so rewrite them all, matching ``supersedes`` by
-    identity to leave a genuine per-model override in place.
-    """
-    setattr(PreTrainedConfig, name, validator)
-
-    seen: set[int] = set()
-    stack = [PreTrainedConfig]
-    while stack:
-        cls = stack.pop()
-        if id(cls) in seen:
-            continue
-        seen.add(id(cls))
-        validators = cls.__dict__.get("__class_validators__")
-        if isinstance(validators, list) and any(v is supersedes for v in validators):
-            cls.__class_validators__ = [
-                validator if v is supersedes else v for v in validators
-            ]
-        stack.extend(cls.__subclasses__())
-
-
-def _patch_hf_transformers_validate_rope():
-    """Transformers v5 moved the ignore_keys option from the method signature of
-    validate_rope and replaced it with the ignore_keys_at_rope_validation parameter
-    in the PreTrainedConfig class. This is a patch to make older versions of
-    validate_rope() with the ignore_keys parameter work with newer versions of
-    hf transformers (from v5 onwards)
-    """
-    if hasattr(PreTrainedConfig.validate_rope, "__vllm_patched__"):
-        return
-
-    _original_validate_rope = PreTrainedConfig.validate_rope
-
-    @wraps(_original_validate_rope)
-    def patched_validate_rope(self, *args, **kwargs):
-        ignore_keys_param = kwargs.pop("ignore_keys", None)
-        original_ignore_keys = self.ignore_keys_at_rope_validation
-        if ignore_keys_param is not None:
-            logger.warning(
-                "validate_rope() was called with the legacy 'ignore_keys' "
-                "argument; use 'ignore_keys_at_rope_validation' instead"
-            )
-        self.ignore_keys_at_rope_validation = original_ignore_keys or ignore_keys_param
-        result = _original_validate_rope(self, *args, **kwargs)
-        return result
-
-    patched_validate_rope.__vllm_patched__ = True  # type: ignore[attr-defined]
-    _install_hf_config_validator(
-        "validate_rope", patched_validate_rope, _original_validate_rope
-    )
-
-
-def _patch_hf_transformers_nested_rope_validation() -> None:
-    """Drop shared entries sitting alongside a nested ``rope_parameters`` dict.
-
-    Transformers validates a dict with any layer-type key by iterating all of
-    its values, so a shared entry next to the per-layer dicts raises an
-    ``AttributeError``. The per-layer dicts already carry their own defaults by
-    the time validation runs, so the shared entries can be dropped.
-    """
-    if hasattr(PreTrainedConfig.validate_rope, "__vllm_nested_rope_patched__"):
-        return
-
-    _original_validate_rope = PreTrainedConfig.validate_rope
-
-    @wraps(_original_validate_rope)
-    def patched_validate_rope(self, *args, **kwargs):
-        rope_parameters = getattr(self, "rope_parameters", None)
-        if isinstance(rope_parameters, dict):
-            layer_types = set(rope_parameters) & set(
-                hf_configuration_utils.ALLOWED_LAYER_TYPES
-            )
-            if layer_types and (shared_keys := set(rope_parameters) - layer_types):
-                for key in shared_keys:
-                    del rope_parameters[key]
-                logger.warning(
-                    "Dropping %s from rope_parameters; entries shared across "
-                    "layer types are not supported",
-                    sorted(shared_keys),
-                )
-        return _original_validate_rope(self, *args, **kwargs)
-
-    patched_validate_rope.__vllm_nested_rope_patched__ = True  # type: ignore[attr-defined]
-    _install_hf_config_validator(
-        "validate_rope", patched_validate_rope, _original_validate_rope
-    )
-
-
 class HFConfigParser(ConfigParserBase):
     def parse(
         self,
@@ -318,8 +154,6 @@ class HFConfigParser(ConfigParserBase):
                 if config_dict.get("speculators_config") is not None
                 else model_type
             )
-        if model_type is None and (architectures := config_dict.get("architectures")):
-            model_type = _ARCHITECTURE_TO_MODEL_TYPE.get(architectures[0])
         # Allow hf_overrides to override model_type before checking _CONFIG_REGISTRY
         if (hf_overrides := kwargs.pop("hf_overrides", None)) is not None:
             if isinstance(hf_overrides, dict) and "model_type" in hf_overrides:
@@ -333,40 +167,7 @@ class HFConfigParser(ConfigParserBase):
                 dummy_model_type = hf_overrides(dummy_config).model_type
                 model_type = dummy_model_type.removeprefix("dummy_")
 
-        if model_type in _PATCH_HF_VALIDATE_ROPE:
-            _patch_hf_transformers_validate_rope()
-
-        if model_type in _PATCH_HF_NESTED_ROPE_VALIDATION:
-            _patch_hf_transformers_nested_rope_validation()
-
-        if model_type == "vlm":
-            # HyperCLOVAX remote code registers this alias in a bare
-            # `try/except` that fails silently since transformers 5.18
-            from transformers import CONFIG_MAPPING, Qwen2_5_VLVisionConfig
-
-            CONFIG_MAPPING.register(
-                "qwen2_5_vl_visual", Qwen2_5_VLVisionConfig, exist_ok=True
-            )
-
-        rope_parameters = config_dict.get("rope_parameters") or {}
-        if model_type == "gemma4_text" and "full_attention" in rope_parameters:
-            from transformers import Gemma4TextConfig
-
-            # Published DSpark configs mix redundant scalar entries with per-layer
-            # RoPE dicts. Remove them before Transformers' constructor validates.
-            config_dict["rope_parameters"] = {
-                k: v
-                for k, v in rope_parameters.items()
-                if k not in ("rope_type", "rope_theta")
-            }
-            kwargs.setdefault("name_or_path", str(model))
-            config = Gemma4TextConfig.from_dict(config_dict, **kwargs)
-        elif model_type in _ARCHITECTURE_TO_MODEL_TYPE.values():
-            from transformers import CONFIG_MAPPING
-
-            kwargs.setdefault("name_or_path", str(model))
-            config = CONFIG_MAPPING[model_type].from_dict(config_dict, **kwargs)
-        elif model_type in _SPECULATIVE_DECODING_CONFIGS:
+        if model_type in _SPECULATIVE_DECODING_CONFIGS:
             config_class = _CONFIG_REGISTRY[model_type]
             config = config_class.from_pretrained(
                 model,
@@ -394,7 +195,6 @@ class HFConfigParser(ConfigParserBase):
                 # Now that it is registered, it is not considered remote code anymore
                 trust_remote_code = False
             try:
-                kwargs = _maybe_update_auto_config_kwargs(kwargs, model_type=model_type)
                 config = AutoConfig.from_pretrained(
                     model,
                     trust_remote_code=trust_remote_code,
@@ -731,13 +531,6 @@ def is_encoder_decoder(config: PreTrainedConfig) -> bool:
         return getattr(config, "is_encoder_decoder", False)
 
     return _is_encoder_decoder(config) or _is_encoder_decoder(config.get_text_config())
-
-
-def _maybe_update_auto_config_kwargs(kwargs: dict[str, Any], model_type: str):
-    """Update kwargs for AutoConfig initialization based on model_type."""
-    if model_type in _AUTO_CONFIG_KWARGS_OVERRIDES:
-        kwargs.update(_AUTO_CONFIG_KWARGS_OVERRIDES[model_type])
-    return kwargs
 
 
 def _maybe_remap_hf_config_attrs(config: PreTrainedConfig) -> PreTrainedConfig:

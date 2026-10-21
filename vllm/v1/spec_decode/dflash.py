@@ -74,7 +74,7 @@ class DFlashProposer(SpecDecodeBaseProposer):
         # For DFlash we use the input embeddings to embed the mask token
         self.parallel_drafting_hidden_state_tensor = None
 
-        from vllm.model_executor.models.qwen3_dflash import dflash_has_any_non_causal
+        from vllm.v1.spec_decode.draft_attention import dflash_has_any_non_causal
 
         self.dflash_causal = not dflash_has_any_non_causal(
             self.draft_model_config.hf_config

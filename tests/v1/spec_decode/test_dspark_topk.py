@@ -5,6 +5,7 @@ import pytest
 import torch
 from torch import nn
 
+from vllm.model_executor.layers.dspark import DSparkMarkovHead
 from vllm.model_executor.layers.quantization.modelopt import (
     ModelOptLinearMethod,
     resolve,
@@ -13,7 +14,6 @@ from vllm.model_executor.layers.quantization.utils.nvfp4_emulation_utils import 
     dequantize_to_dtype,
     nvfp4_gathered_bias,
 )
-from vllm.model_executor.models.qwen3_dspark import DSparkMarkovHead
 from vllm.platforms import current_platform
 
 
