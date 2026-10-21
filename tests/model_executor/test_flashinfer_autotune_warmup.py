@@ -313,8 +313,6 @@ def autotune_run(monkeypatch, tmp_path):
         monkeypatch.setattr(
             warmup, "_run_flashinfer_autotune_dummy_runs", run.dummy_runs
         )
-        monkeypatch.setattr(warmup, "replayssm_autotune_warmup", lambda runner: None)
-        monkeypatch.setattr(warmup, "_autotune_kimi_k3_kda_qkvg", lambda model: None)
         return run
 
     return make_run

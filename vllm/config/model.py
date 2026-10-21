@@ -349,12 +349,8 @@ class ModelConfig:
     """If a dictionary, contains arguments to be forwarded to the Hugging Face
     config. If a callable, it is called to update the HuggingFace config."""
     model_class_overrides: dict[str, str] = field(default_factory=dict)
-    """Override the model class used for one or more architectures, mapping the
-    architecture name to a `"module:class"` target (the same format accepted by
-    `ModelRegistry.register_model`). This registers the target class at runtime,
-    e.g. `{"GlmMoeDsaForCausalLM":
-    "vllm.models.deepseek_v32.nvidia.model:DeepseekV32ForCausalLM"}`. This
-    argument is for development and debugging purposes only."""
+    """Reserved for config compatibility. Non-empty overrides are rejected by
+    this build's fixed DeepSeek V4.1 model registry."""
     generation_config: str = "auto"
     """The folder path to the generation config. Defaults to `"auto"`, the
     generation config will be loaded from model path. If set to `"vllm"`, no
@@ -722,39 +718,18 @@ class ModelConfig:
                     "it into a pooling model."
                 )
 
-        # Note: Initialize these attributes early because transformers fallback
-        # may fail to load dynamic modules in child processes
         model_info, arch = registry.inspect_model_cls(architectures, self)
         self._model_info = model_info
         self._architecture = arch
         logger.info("Resolved architecture: %s", arch)
 
-        # Set default tokenizer modes based on model architecture
-        if self.tokenizer_mode == "auto":
-            if self.model_impl == "terratorch":
-                self.tokenizer_mode = "terratorch"
-            elif arch == "MoonshotKimiaForCausalLM":
-                self.tokenizer_mode = "kimi_audio"
-            elif arch == "KimiK3ForConditionalGeneration":
-                self.tokenizer_mode = "kimi_k3"
-            elif arch == "DeepseekV32ForCausalLM":
-                self.tokenizer_mode = "deepseek_v32"
-            elif arch in (
-                "DeepseekV4ForCausalLM",
-                "DeepseekV4ForConditionalGeneration",
-            ):
-                self.tokenizer_mode = "deepseek_v4"
-            elif arch == "DeepseekV41ForCausalLM":
-                self.tokenizer_mode = "deepseek_v41"
-            elif arch in ("InklingForCausalLM", "InklingForConditionalGeneration"):
-                self.tokenizer_mode = "inkling"
-
-            if self.tokenizer_mode != "auto":
-                logger.info(
-                    "Defaulting to tokenizer_mode=%r for %s",
-                    self.tokenizer_mode,
-                    arch,
-                )
+        if self.tokenizer_mode == "auto" and arch == "DeepseekV41ForCausalLM":
+            self.tokenizer_mode = "deepseek_v41"
+            logger.info(
+                "Defaulting to tokenizer_mode=%r for %s",
+                self.tokenizer_mode,
+                arch,
+            )
 
         # Init pooler config if needed
         if self.runner_type == "pooling":

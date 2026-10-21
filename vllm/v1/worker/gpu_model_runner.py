@@ -187,8 +187,6 @@ from vllm.v1.spec_decode.dflash import DFlashProposer
 from vllm.v1.spec_decode.draft_model import DraftModelProposer
 from vllm.v1.spec_decode.eagle import EagleProposer
 from vllm.v1.spec_decode.extract_hidden_states import ExtractHiddenStatesProposer
-from vllm.v1.spec_decode.gemma4 import Gemma4Proposer
-from vllm.v1.spec_decode.medusa import MedusaProposer
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 from vllm.v1.spec_decode.ngram_proposer_gpu import (
     NgramProposerGPU,
@@ -196,7 +194,6 @@ from vllm.v1.spec_decode.ngram_proposer_gpu import (
     update_ngram_gpu_tensors_incremental,
     update_scheduler_for_invalid_drafts,
 )
-from vllm.v1.spec_decode.step3p5 import Step3p5MTPProposer
 from vllm.v1.spec_decode.suffix_decoding import SuffixDecodingProposer
 from vllm.v1.spec_decode.utils import update_num_computed_tokens_for_batch_change
 from vllm.v1.structured_output.utils import apply_grammar_bitmask
@@ -608,10 +605,7 @@ class GPUModelRunner(
                 | EagleProposer
                 | DFlashProposer
                 | DraftModelProposer
-                | MedusaProposer
                 | ExtractHiddenStatesProposer
-                | Gemma4Proposer
-                | Step3p5MTPProposer
             )
             if self.speculative_config.method == "custom_class":
                 self.drafter = create_custom_proposer(  # type: ignore[assignment]
@@ -644,10 +638,6 @@ class GPUModelRunner(
                 self._ngram_pinned_val_buf = torch.zeros(
                     self.max_num_reqs, dtype=torch.int32, pin_memory=True
                 )
-            elif self.speculative_config.use_gemma4_mtp():
-                self.drafter = Gemma4Proposer(self.vllm_config, self.device, self)
-            elif self.speculative_config.use_step3p5_mtp():
-                self.drafter = Step3p5MTPProposer(self.vllm_config, self.device, self)
             elif self.speculative_config.use_dflash():
                 self.drafter = DFlashProposer(self.vllm_config, self.device, self)
                 self.use_aux_hidden_state_outputs = True
@@ -659,10 +649,6 @@ class GPUModelRunner(
                     self.use_aux_hidden_state_outputs = (
                         self.drafter.eagle3_use_aux_hidden_state
                     )
-            elif self.speculative_config.method == "medusa":
-                self.drafter = MedusaProposer(
-                    vllm_config=self.vllm_config, device=self.device
-                )
             elif self.speculative_config.method == "extract_hidden_states":
                 self.drafter = ExtractHiddenStatesProposer(
                     vllm_config=self.vllm_config, device=self.device
@@ -2563,7 +2549,6 @@ class GPUModelRunner(
                     (
                         EagleProposer,
                         DFlashProposer,
-                        Gemma4Proposer,
                         ExtractHiddenStatesProposer,
                     ),
                 ):
@@ -2571,16 +2556,6 @@ class GPUModelRunner(
                         spec_decode_common_attn_metadata = cm
                 else:
                     spec_decode_common_attn_metadata = cm
-            # Capture per-group block tables for multi-group proposers.
-            if self.speculative_config and isinstance(self.drafter, Step3p5MTPProposer):
-                self.drafter.set_per_group_attn_metadata(
-                    kv_cache_gid, cm.block_table_tensor, cm.slot_mapping
-                )
-            elif self.speculative_config and isinstance(self.drafter, Gemma4Proposer):
-                self.drafter.set_per_group_block_table(
-                    kv_cache_gid, cm.block_table_tensor
-                )
-
             for attn_gid in range(len(self.attn_groups[kv_cache_gid])):
                 if ubatch_slices is not None:
                     for ubid, _cm in enumerate(split_attn_metadata(ubatch_slices, cm)):
@@ -4577,8 +4552,7 @@ class GPUModelRunner(
                     EagleProposer
                     | DFlashProposer
                     | DraftModelProposer
-                    | ExtractHiddenStatesProposer
-                    | Gemma4Proposer,
+                    | ExtractHiddenStatesProposer,
                 )
                 sampled_token_ids = sampler_output.sampled_token_ids
                 if input_fits_in_drafter:
@@ -4673,8 +4647,7 @@ class GPUModelRunner(
                     EagleProposer
                     | DFlashProposer
                     | DraftModelProposer
-                    | ExtractHiddenStatesProposer
-                    | Gemma4Proposer,
+                    | ExtractHiddenStatesProposer,
                 )
                 self.drafter.dummy_run(num_tokens=1)
 
@@ -5006,33 +4979,6 @@ class GPUModelRunner(
                 sampled_token_ids,
                 slot_mappings=slot_mappings,
             )
-        elif spec_config.method == "medusa":
-            assert isinstance(sampled_token_ids, list)
-            assert isinstance(self.drafter, MedusaProposer)
-
-            if sample_hidden_states.shape[0] == len(sampled_token_ids):
-                # The input to the target model does not include draft tokens.
-                hidden_states = sample_hidden_states
-            else:
-                indices = []
-                offset = 0
-                assert spec_decode_metadata is not None, (
-                    "No spec decode metadata for medusa"
-                )
-                for num_draft, tokens in zip(
-                    spec_decode_metadata.num_draft_tokens, sampled_token_ids
-                ):
-                    indices.append(offset + len(tokens) - 1)
-                    offset += num_draft + 1
-                indices = async_tensor_h2d(indices, device=self.device)
-                hidden_states = sample_hidden_states[indices]
-
-            draft_token_ids = self.drafter.propose(
-                num_speculative_tokens=num_spec_tokens_to_schedule,
-                target_hidden_states=hidden_states,
-                sampling_metadata=sampling_metadata,
-                slot_mappings=slot_mappings,
-            )
         elif spec_config.uses_extract_hidden_states():
             assert isinstance(self.drafter, ExtractHiddenStatesProposer)
             assert isinstance(sampled_token_ids, torch.Tensor), (
@@ -5071,7 +5017,7 @@ class GPUModelRunner(
         ):
             assert isinstance(
                 self.drafter,
-                EagleProposer | DFlashProposer | DraftModelProposer | Gemma4Proposer,
+                EagleProposer | DFlashProposer | DraftModelProposer,
             )
 
             if spec_config.disable_padded_drafter_batch:
@@ -6108,8 +6054,7 @@ class GPUModelRunner(
                     EagleProposer
                     | DFlashProposer
                     | DraftModelProposer
-                    | ExtractHiddenStatesProposer
-                    | Gemma4Proposer,
+                    | ExtractHiddenStatesProposer,
                 )
                 assert self.speculative_config is not None
                 # Eagle currently only supports PIECEWISE cudagraphs.
@@ -7063,7 +7008,7 @@ class GPUModelRunner(
         ):
             assert isinstance(
                 self.drafter,
-                EagleProposer | DFlashProposer | DraftModelProposer | Gemma4Proposer,
+                EagleProposer | DFlashProposer | DraftModelProposer,
             )
             self.drafter.initialize_attn_backend(kv_cache_config, kernel_block_sizes)
 
@@ -7119,8 +7064,7 @@ class GPUModelRunner(
                 EagleProposer
                 | DFlashProposer
                 | DraftModelProposer
-                | ExtractHiddenStatesProposer
-                | Gemma4Proposer,
+                | ExtractHiddenStatesProposer,
             )
             self.drafter.initialize_cudagraph_keys(cudagraph_mode)
 

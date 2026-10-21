@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Warmup kernels used during model execution.
+"""Warmup kernels used during DeepSeek V4.1 model execution.
 This is useful specifically for JIT'ed kernels as we don't want JIT'ing to
 happen during model execution.
 """
@@ -25,18 +25,6 @@ from vllm.model_executor.warmup.flashinfer_sparse_mla_warmup import (
     autotune_hisparse_flashinfer_attention,
     deepseek_v4_sparse_mla_attention_warmup,
     flashinfer_sparse_mla_decode_autotune_warmup,
-)
-from vllm.model_executor.warmup.kimi_k3_triton_warmup import (
-    kimi_k3_triton_warmup,
-)
-from vllm.model_executor.warmup.mamba_triton_warmup import mamba_triton_warmup
-from vllm.model_executor.warmup.qwen4_exp_qsa_warmup import (
-    qwen4_exp_qsa_triton_warmup,
-)
-from vllm.model_executor.warmup.qwen_triton_warmup import qwen_triton_warmup
-from vllm.model_executor.warmup.qwen_vl_triton_warmup import qwen_vl_triton_warmup
-from vllm.model_executor.warmup.replayssm_warmup import (
-    replayssm_autotune_warmup,
 )
 from vllm.model_executor.warmup.watermark_sample_warmup import (
     watermark_sample_warmup,
@@ -138,10 +126,8 @@ def _warmup_bf16x3_router_gemm(
 
 
 def _warmup_gemm_rs_ar() -> None:
-    # Model construction (Kimi-K3, DeepSeek-V4.1) imports this module only
-    # when GEMM-RS/AR is enabled and initializes its singleton before
-    # kernel_warmup runs. Avoid importing it here so other models do not
-    # compile the RS/AR variants.
+    # Model construction initializes this singleton when GEMM-RS/AR is enabled.
+    # Avoid compiling its variants when the model does not use them.
     module = sys.modules.get("vllm.model_executor.kernels.linear.cute_dsl.gemm_rs_ar")
     if module is None:
         return
@@ -150,17 +136,7 @@ def _warmup_gemm_rs_ar() -> None:
         logger.info_once("Warmed up %d GEMM-RS/AR variants.", compiled)
 
 
-def _autotune_kimi_k3_kda_qkvg(model: torch.nn.Module) -> None:
-    module = sys.modules.get("vllm.models.kimi_k3.nvidia.low_latency_gemm")
-    if module is not None:
-        module.autotune_kda_qkvg(model)
-
-
 def kernel_warmup(worker: "Worker", *, process_local_only: bool = False):
-    from vllm.model_executor.warmup.minimax_m3_msa_warmup import (
-        minimax_m3_msa_warmup,
-    )
-
     if not worker.use_v2_model_runner:
         # The KV-block zeroing kernel is driven by the scheduler's
         # `new_block_ids_to_zero`, so no dummy run ever reaches it.
@@ -188,18 +164,12 @@ def kernel_warmup(worker: "Worker", *, process_local_only: bool = False):
             time.perf_counter() - jit_warmup_start,
         )
 
-    qwen_triton_warmup(worker.model_runner, worker.vllm_config.model_config)
-    qwen_vl_triton_warmup(worker.model_runner)
-    mamba_triton_warmup(worker.model_runner)
-
     compilation_config = worker.vllm_config.compilation_config
     cudagraph_capture_sizes = list(compilation_config.cudagraph_capture_sizes or [])
 
     # Run next so input-prep kernels JIT against pristine runner state.
     if enable_jit_warmup:
-        kimi_k3_triton_warmup(worker)
         watermark_sample_warmup(worker)
-        qwen4_exp_qsa_triton_warmup(worker)
 
     if enable_jit_warmup and current_platform.is_device_capability_family(100):
         _warmup_bf16x3_router_gemm(
@@ -241,8 +211,6 @@ def kernel_warmup(worker: "Worker", *, process_local_only: bool = False):
         deep_gemm_warmup(model, max_tokens)
 
     b12x_warmup(worker, cudagraph_capture_sizes)
-
-    minimax_m3_msa_warmup(worker)
 
     # Allocate the exact decode-sized workspace, autotune cache misses, and
     # resolve every CUDA Graph bucket before capture begins.
@@ -490,8 +458,6 @@ def flashinfer_autotune(runner: "GPUModelRunner") -> None:
                 # size, not the prefill-sized batch used for the full model.
                 autotune_hisparse_flashinfer_attention(runner)
             _run_flashinfer_autotune_dummy_runs(runner, skip_attn=hisparse_enabled)
-            replayssm_autotune_warmup(runner)
-            _autotune_kimi_k3_kda_qkvg(runner.get_model())
     finally:
         set_autotune_process_group(None)
 

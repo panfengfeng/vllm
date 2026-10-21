@@ -5707,7 +5707,6 @@ steps:
 
 - label: ":amd: (MI355 DPX) Spec Decode AL MTP + Other Acceptance Nightly"
   timeout_in_minutes: 55
-  parallelism: 3
   mirror_hardwares: [amdexperimental, amdproduction, amdgfx950nightly, amdmi355]
   dind: false
   agent_pool: mi355_dpx
@@ -5734,9 +5733,7 @@ steps:
   - vllm/v1/worker/gpu/spec_decode/
   - tests/v1/e2e/spec_decode/conftest.py
   commands:
-  - if [ "$$BUILDKITE_PARALLEL_JOB" = "0" ]; then pytest -v -s v1/e2e/spec_decode/acceptance_rates/mtp_other/ --deselect "tests/v1/e2e/spec_decode/acceptance_rates/mtp_other/test_mtp.py::test_gemma4_mtp_acceptance_lengths[False]" --deselect "tests/v1/e2e/spec_decode/acceptance_rates/mtp_other/test_mtp.py::test_gemma4_mtp_acceptance_lengths[True]"; fi
-  - if [ "$$BUILDKITE_PARALLEL_JOB" = "1" ]; then pytest -v -s "v1/e2e/spec_decode/acceptance_rates/mtp_other/test_mtp.py::test_gemma4_mtp_acceptance_lengths[False]"; fi
-  - if [ "$$BUILDKITE_PARALLEL_JOB" = "2" ]; then pytest -v -s "v1/e2e/spec_decode/acceptance_rates/mtp_other/test_mtp.py::test_gemma4_mtp_acceptance_lengths[True]"; fi
+  - pytest -v -s v1/e2e/spec_decode/acceptance_rates/mtp_other/
 
 #-----------------------------------------------------------  mi355 · misc  ------------------------------------------------------------#
 

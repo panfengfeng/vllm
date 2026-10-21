@@ -8,7 +8,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphWrapper
 from vllm.config import (
     CUDAGraphMode,
     VllmConfig,
@@ -30,12 +29,7 @@ from vllm.model_executor.models import (
     supports_multimodal,
     supports_multimodal_embeddings,
 )
-from vllm.model_executor.models.deepseek_eagle3 import Eagle3DeepseekV2ForCausalLM
 from vllm.model_executor.models.interfaces import SupportsMultiModal
-from vllm.model_executor.models.laguna_dflash import DFlashLagunaForCausalLM
-from vllm.model_executor.models.llama_eagle3 import Eagle3LlamaForCausalLM
-from vllm.model_executor.models.qwen3_dflash import DFlashQwen3ForCausalLM
-from vllm.model_executor.models.qwen3_eagle3 import Eagle3Qwen3ForCausalLM
 from vllm.platforms import current_platform
 from vllm.utils.torch_utils import PIN_MEMORY, async_tensor_h2d
 from vllm.v1.attention.backend import CommonAttentionMetadata
@@ -534,19 +528,6 @@ class SpecDecodeBaseProposer:
         batch_size = common_attn_metadata.batch_size()
 
         if self.method in ("eagle3", "dflash"):
-            model = self.model
-            if isinstance(model, BreakableCUDAGraphWrapper):
-                model = model.unwrap()
-            assert isinstance(
-                model,
-                (
-                    Eagle3LlamaForCausalLM,
-                    Eagle3DeepseekV2ForCausalLM,
-                    DFlashQwen3ForCausalLM,
-                    Eagle3Qwen3ForCausalLM,
-                    DFlashLagunaForCausalLM,
-                ),
-            )
             target_hidden_states = self.model.combine_hidden_states(
                 target_hidden_states
             )
@@ -1000,18 +981,6 @@ class SpecDecodeBaseProposer:
         return per_group_attn_metadata, per_layer_attn_metadata
 
     def model_returns_tuple(self) -> bool:
-        if self.method == "mtp":
-            # These models return separate hidden states for logits and for
-            # feedback into the next draft step.
-            architectures = self.draft_model_config.hf_config.architectures or []
-            return bool(
-                {
-                    "DeepSeekMTPModel",
-                    "DeepseekV32MTPModel",
-                    "Glm5NextMTPModel",
-                    "KimiK3MTPModel",
-                }.intersection(architectures)
-            )
         return self.method not in ("mtp", "draft_model", "dflash")
 
     def prepare_next_token_ids_cpu(
@@ -1258,11 +1227,6 @@ class SpecDecodeBaseProposer:
 
         return spec_common_attn_metadata, token_indices
 
-    def get_model_name(self, model: nn.Module) -> str:
-        if hasattr(model, "module"):  # multi-GPU
-            model = model.module
-        return model.__class__.__name__
-
     def _create_draft_vllm_config(self) -> VllmConfig:
         """Return a VllmConfig with kernel-level overrides for the proposer.
         Subclasses may override to apply additional config changes.
@@ -1352,43 +1316,7 @@ class SpecDecodeBaseProposer:
         if supports_multimodal(target_model):
             # handle multimodality
             assert hasattr(target_model, "config")
-            if self.get_model_name(target_model) in [
-                "BailingMoeV3VLForConditionalGeneration",
-                "Cohere2VisionForConditionalGeneration",
-                "Exaone4_5_ForConditionalGeneration",
-                "GlmOcrForConditionalGeneration",
-                "HunYuanVLForConditionalGeneration",
-                "InternS2PreviewForConditionalGeneration",
-                "MiMoV2OmniForCausalLM",
-                "Qwen2_5_VLForConditionalGeneration",
-                "Qwen3_5ForConditionalGeneration",
-                "Qwen3_5MoeForConditionalGeneration",
-                "Qwen3VLForConditionalGeneration",
-                "Qwen3VLMoeForConditionalGeneration",
-                "Gemma4ForConditionalGeneration",
-                "Gemma4UnifiedForConditionalGeneration",
-                "Step3p7ForConditionalGeneration",
-            ]:
-                self.model.config.image_token_index = target_model.config.image_token_id
-            elif self.get_model_name(target_model) == "PixtralForConditionalGeneration":
-                self.model.config.image_token_index = (
-                    target_model.config.vision_config.image_token_id
-                )
-            elif self.get_model_name(target_model) in (
-                "KimiK25ForConditionalGeneration",
-                "KimiK3ForConditionalGeneration",
-            ):
-                self.model.config.image_token_index = (
-                    target_model.config.media_placeholder_token_id
-                )
-            elif self.get_model_name(target_model) == "NemotronH_Nano_VL_V2":
-                self.model.config.image_token_index = (
-                    target_model.config.img_context_token_id
-                )
-            else:
-                self.model.config.image_token_index = (
-                    target_model.config.image_token_index
-                )
+            self.model.config.image_token_index = target_model.config.image_token_index
             target_language_model = cast(
                 SupportsMultiModal, target_model
             ).get_language_model()

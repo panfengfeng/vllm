@@ -9,11 +9,19 @@ steps:
     source_file_dependencies:
       - .buildkite/test_areas/deepseek_v41.yaml
       - vllm/model_executor/models/registry.py
+      - vllm/config/speculative.py
+      - vllm/model_executor/warmup/kernel_warmup.py
+      - vllm/models/deepseek_v4/__init__.py
+      - vllm/v1/worker/gpu/spec_decode/
       - tools/prune_models.py
       - tests/standalone_tests/test_deepseek_v41_registry.py
+      - tests/standalone_tests/test_deepseek_v41_shared_imports.py
+      - tests/standalone_tests/test_deepseek_v41_speculative.py
+      - tests/standalone_tests/test_deepseek_v41_speculator_dispatch.py
+      - tests/standalone_tests/test_deepseek_v41_warmup.py
       - tests/tools/test_prune_models.py
     commands:
       - uv venv --python 3.12 .venv
       - uv pip install --python .venv/bin/python pytest
-      - .venv/bin/python -m pytest --confcutdir=standalone_tests standalone_tests/test_deepseek_v41_registry.py -q
+      - .venv/bin/python -m pytest --confcutdir=standalone_tests standalone_tests/test_deepseek_v41_*.py -q
       - PYTHONPATH=.. .venv/bin/python -m pytest --confcutdir=tools tools/test_prune_models.py -q

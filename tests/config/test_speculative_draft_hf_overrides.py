@@ -1,15 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Tests for draft config overrides used by SpeculativeConfig.
-
-Callable ``hf_overrides`` on the target model config (e.g. the
-``dummy_hf_overrides`` shrink used by ``tests/models/test_initialization.py``)
-must also be applied when building the draft ``ModelConfig``. Otherwise a
-draft belonging to a large target model is instantiated at full size even
-when the target itself is shrunk — which is what kept spec-decode archs like
-``EagleMistralLarge3ForCausalLM`` stuck at ``is_available_online=False``
-("TODO: revert once figuring out OOM in CI").
-"""
+"""Tests for V4.1 bundled draft overrides and callable override composition."""
 
 import functools
 from unittest.mock import MagicMock, patch
@@ -23,8 +14,8 @@ from vllm.config.speculative import SpeculativeConfig
 
 def _make_hf_config(**kwargs) -> PreTrainedConfig:
     defaults = dict(
-        architectures=["LlamaForCausalLM"],
-        model_type="llama",
+        architectures=["DeepseekV41ForCausalLM"],
+        model_type="deepseek_v41",
         num_hidden_layers=64,
     )
     defaults.update(kwargs)
@@ -73,30 +64,12 @@ def _make_speculative_config(
     [
         (
             dict(
-                model_type="deepseek_v4",
-                num_nextn_predict_layers=3,
-                dspark_block_size=5,
-            ),
-            3,
-            "DSparkDraftModel",
-        ),
-        (
-            dict(
                 model_type="deepseek_v41",
                 num_nextn_predict_layers=3,
                 dspark_block_size=5,
             ),
             3,
             "DSparkV41DraftModel",
-        ),
-        (
-            dict(
-                model_type="gemma4_text",
-                architectures=["Gemma4DSparkModel"],
-                block_size=5,
-            ),
-            None,
-            "Gemma4DSparkModel",
         ),
     ],
 )
@@ -114,21 +87,13 @@ def test_dspark_width_is_independent_of_mtp_stages(
 
 
 @pytest.mark.cpu_test
-def test_mtp_stages_are_independent_of_dspark_width():
-    hf_kwargs = dict(
-        model_type="deepseek_v4", num_nextn_predict_layers=3, dspark_block_size=5
-    )
-    config = _make_speculative_config(
-        hf_kwargs, "DeepSeekV4MTPModel", method="mtp", num_speculative_tokens=6
-    )
-
-    assert config.num_speculative_tokens == 6
-    assert config.draft_model_config.hf_config.n_predict == 3
-    assert config.draft_model_config.hf_config.architectures == ["DeepSeekV4MTPModel"]
-
-    with pytest.raises(ValueError, match="must be divisible by n_predict=3"):
+def test_classic_mtp_is_rejected_for_v41():
+    with pytest.raises(ValueError, match="has no classic-MTP draft"):
         _make_speculative_config(
-            hf_kwargs, "DeepSeekV4MTPModel", method="mtp", num_speculative_tokens=5
+            dict(model_type="deepseek_v41", num_nextn_predict_layers=3),
+            "DeepseekV41ForCausalLM",
+            method="mtp",
+            num_speculative_tokens=3,
         )
 
 
@@ -150,56 +115,18 @@ def test_callable_overrides_reach_the_draft_config():
 
 
 @pytest.mark.cpu_test
-def test_arch_mapping_applies_before_callable_override():
-    """The static arch-mapping override runs first, so the user callable
-    observes (and may adjust) the post-mapping config."""
-    seen_architectures: list[str] = []
+def test_v41_stage_metadata_applies_before_callable_override():
+    seen = []
 
     def record(hf_config: PreTrainedConfig) -> PreTrainedConfig:
-        seen_architectures.append(hf_config.architectures[0])
+        seen.append(
+            (hf_config.model_type, hf_config.n_predict, hf_config.architectures)
+        )
         return hf_config
 
     composed = SpeculativeConfig.compose_draft_hf_overrides(record)
-
-    # MiMo is one of the arch-mapped model types: hf_config_override
-    # rewrites architectures to ["MiMoMTPModel"].
-    mimo = _make_hf_config(
-        architectures=["MiMoForCausalLM"],
-        model_type="mimo",
-        num_nextn_predict_layers=1,
-    )
-    composed(mimo)
-    assert seen_architectures == ["MiMoMTPModel"]
-
-
-@pytest.mark.cpu_test
-def test_inkling_override_exposes_all_mtp_depths():
-    text_config = _make_hf_config(
-        architectures=["InklingForCausalLM"],
-        model_type="inkling_model",
-        local_layer_ids=[1, 3],
-    )
-    config = _make_hf_config(
-        architectures=["InklingForConditionalGeneration"],
-        model_type="inkling_mm_model",
-        text_config=text_config,
-        mtp_config={
-            "num_nextn_predict_layers": 8,
-            "local_layer_ids": [0, 2, 4],
-        },
-    )
-
-    out = SpeculativeConfig.hf_config_override(config)
-
-    assert out is text_config
-    assert out.model_type == "inkling_mtp"
-    assert out.architectures == ["InklingMTPModel"]
-    # Multi-module MTP: every checkpoint depth is exposed (module i drafts
-    # speculative token i), no longer clamped to the first depth.
-    assert out.n_predict == 8
-    assert out.num_nextn_predict_layers == 8
-    assert out.chain_hidden_post_norm is False
-    assert out.local_layer_ids == [0, 2, 4]
+    composed(_make_hf_config(num_nextn_predict_layers=3))
+    assert seen == [("deepseek_mtp", 3, ["DeepseekV41ForCausalLM"])]
 
 
 def _module_level_shrink(hf_config: PreTrainedConfig) -> PreTrainedConfig:
@@ -221,52 +148,3 @@ def test_composed_override_is_picklable():
 
     out = composed(_make_hf_config())
     assert out.num_hidden_layers == 1
-
-
-def _make_mtp_speculative_config(
-    override: bool | None,
-    checkpoint_value: bool,
-) -> SpeculativeConfig:
-    draft_hf_config = _make_hf_config(
-        architectures=["Qwen4ExpMTP"],
-        model_type="qwen4_exp_mtp",
-        n_predict=1,
-        index_share_for_mtp_iteration=checkpoint_value,
-    )
-    draft_model_config = MagicMock(
-        model="draft",
-        hf_config=draft_hf_config,
-        architectures=draft_hf_config.architectures,
-        max_model_len=128,
-    )
-    target_model_config = MagicMock(
-        model="target",
-        max_model_len=128,
-        quantization=None,
-        hf_overrides={},
-    )
-
-    with patch("vllm.config.speculative.ModelConfig", return_value=draft_model_config):
-        return SpeculativeConfig(
-            model="draft",
-            method="mtp",
-            num_speculative_tokens=1,
-            index_share_for_mtp_iteration=override,
-            target_model_config=target_model_config,
-            target_parallel_config=ParallelConfig(),
-        )
-
-
-@pytest.mark.cpu_test
-@pytest.mark.parametrize(
-    ("override", "checkpoint_value", "expected"),
-    [(None, True, True), (False, True, False), (True, False, True)],
-)
-def test_mtp_index_share_override(
-    override: bool | None, checkpoint_value: bool, expected: bool
-):
-    speculative_config = _make_mtp_speculative_config(override, checkpoint_value)
-    assert (
-        speculative_config.draft_model_config.hf_config.index_share_for_mtp_iteration
-        is expected
-    )

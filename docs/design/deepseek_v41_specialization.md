@@ -16,35 +16,57 @@
 | 架构列表 | 包含任何未支持架构即拒绝；不进行名称后缀自动转换 |
 | 替代模型实现 | 拒绝 `model_impl=transformers/terratorch` |
 | 模型扩展 | 固定只读注册表；拒绝第三方注册和同名覆盖 |
-| 物理裁剪 | 删除模型源码目录内 328 个不被保留代码引用的 Python 文件 |
+| 物理裁剪 | 两轮累计删除 402 个模型 Python 文件；另删除 16 个非目标预热和投机解码模块 |
 
 主模型和草稿模型的两个架构名不代表支持两个独立产品。DSpark 是 V4.1 的内部投机解码路径；禁止它会破坏现有配置转换与加载过程。注册表限制的是标准模型加载入口，不验证权重来源或证明任意自定义 Python 插件的行为。
 
-默认模型通过 `ModelConfig` 传播到引擎参数，`vllm serve` 的帮助文本也已同步。Tokenizer 的现有自动选择逻辑保留。
+默认模型通过 `ModelConfig` 传播到引擎参数，`vllm serve` 的帮助文本也已同步。Tokenizer 自动选择仅保留 V4.1 分支，草稿继承目标 tokenizer 的行为保留。
 
 ## 裁剪规模与保留边界
 
-统计范围仅为 `vllm/model_executor/models/` 和 `vllm/models/` 下的 Git 跟踪 Python 文件。下表采用入口改造完成、物理删除执行前的源码作为分母，不代表整个仓库或容器镜像。
+统计范围仅为 `vllm/model_executor/models/` 和 `vllm/models/` 下的 Git 跟踪 Python 文件。下表采用入口改造完成、第一轮物理删除执行前的源码作为分母，不代表整个仓库或容器镜像。第一轮提交为 `c7623a9bd7`。
 
-| 指标 | 删除前 | 删除后 | 减少 |
+| 指标 | 第一轮前 | 第一轮后 | 第二轮后 |
 | --- | ---: | ---: | ---: |
-| 模型源码文件数 | 630 | 302 | 328，约 52.1% |
-| 模型源码字节数 | 12,659,514 | 5,563,708 | 7,095,806，约 56.1% |
+| 模型源码文件数 | 630 | 302 | 228 |
+| 模型源码字节数 | 12,659,514 | 5,563,708 | 4,116,751 |
 
-此外，注册表由基线的 1,577 行缩减到 548 行，净减少 1,029 行。文件内容并不计入两次：上表的删除前字节已经包含精简后的注册表。
+累计文件数减少约 63.8%，源码字节减少约 67.5%。第二轮删除的 74 个模型文件合计 1,444,926 字节，另精简了保留的 V4 包入口。注册表由基线的 1,577 行缩减到 548 行，净减少 1,029 行；上表的第一轮前字节已经包含精简后的注册表，不重复计入。
 
 裁剪以其他所有 vLLM Python 模块为根，跟踪普通导入、相对导入、父包初始化、延迟导入及可解析的模块字符串。因此仍然会看见 DeepSeek-V4、Qwen、Llama 等名字。例如：
 
-- V4.1 直接复用 DeepSeek-V4 的 MoE、量化和算子；导入其子模块还会执行父包入口。
-- V4.1 DSpark 使用 `qwen3_dspark` 中的共享实现；投机解码的通用 runner 还引用其他 proposer。
-- 通用预热流程导入 Qwen3-VL 类以检查模型类型，即使当前服务的是 V4.1。
+- V4.1 直接复用 DeepSeek-V4 的 MoE、视觉和算子。V4 父包现仅保留量化配置导出，不再连带初始化其完整模型、MTP 和 DSpark。
+- V4.1 DSpark 使用 `qwen3_dspark` 中的共享头部，并通过 `qwen3_dflash` 的辅助逻辑判断非因果注意力；这些文件仍需保留。
 - Transformers 配置、processor、tokenizer 存在惰性注册和共享依赖。
 
 这些是保留的实现依赖，标准注册入口不允许将它们作为其他模型提供服务。
 
 本次还保留调度、连续批处理、KV 管理、请求取消、流式输出、视觉输入、工具调用与推理解析、现有并行机制以及 V4.1 内核。通用配置选项、其他平台分支、测试矩阵、文档和 CUDA 构建目标尚未全面缩减；保留源码不等于验证所有功能组合可用。依赖清单及第三方二进制也没有缩减，所以这不是最终的最小镜像。
 
-后续进一步缩小需要先重构共享代码、移除无关预热及 proposer 导入，再重新计算闭包。不能仅按文件名删除其他模型文件。
+## 第二轮：清理其他模型的条件分支
+
+第一轮只限制注册入口并裁剪无引用模型文件；第二轮进一步移除了让这些文件继续被引用的非目标运行路径。
+
+| 位置 | 本轮清理 | 保留的 V4.1 行为 |
+| --- | --- | --- |
+| `config/speculative.py` | 净删约 849 行其他模型 MTP 转换、Qwen3-Omni 验证、Qwen/Gemma/K3 草稿选择及 Medusa/MLP 补丁 | 草稿配置转换、量化继承、TP/长度限制、DSpark 宽度与无模型投机方法 |
+| `config/model.py` | 删除 Terratorch、Kimi、V3.2、V4、Inkling 的默认 tokenizer 判断 | 主模型 `auto` 选择 V4.1 tokenizer |
+| `model_executor/warmup/` | 删除 Qwen、QwenVL、Mamba、Kimi、Qwen4、MiniMax、ReplaySSM 的 7 个模块及调用 | JIT、CuTeDSL、DeepGEMM、Sparse MLA、router、GEMM-RS/AR、watermark 和硬件预热 |
+| `v1/spec_decode/` 与 `v1/worker/gpu/spec_decode/` | 删除 Gemma4、Step3、Medusa、LiLiCorr、DFlash2 专属分派和 9 个模块 | V4.1 DSpark 分派、显式草稿后端优先、目标 KV 后端继承及共享辅助逻辑 |
+| `models/deepseek_v4/__init__.py` | 删除完整 V4 模型的平台分派与导出 | 量化类导出、V4.1 对共享子模块的直接导入 |
+
+`ReplaySSM` 是非目标状态空间模型的路径；V4.1 的 decoder replay 文件和控制逻辑没有删除。V4.1 的 ViT 也没有继承 Qwen3-VL 的视觉塔，因此删除 QwenVL 预热不会删掉 V4.1 视觉实现。
+
+一个必须保留的名字是 `deepseek_mtp`：草稿配置先借此计算阶段数，并保持主模型架构通过第一次验证，之后才改回 `deepseek_v41` 并选择 `DSparkV41DraftModel`。不能把这个内部过渡状态与不支持的经典 MTP 混为一谈。
+
+本轮删除了 10 个只测试已删除路径的旧测试文件，将其中 2 个共享 DFlash 辅助测试保留到 `tests/v1/spec_decode/test_dflash_model_utils.py`。同步移除了专属 Gemma4 CI 任务及失效测试引用，保留其余通用测试。
+
+仍可继续分析的区域如下；本轮没有将它们视为可以直接删除的代码：
+
+- `transformers_utils/config.py`、`configs/`、`model_arch_config_convertor.py`：仍有多模型配置注册和转换器。需用真实 HF 配置验证视觉子配置、草稿临时别名和错误处理后，再收窄。
+- `qwen3_dspark`、`qwen3_dflash`：可进一步提取 V4.1 所需共享头部与注意力辅助逻辑，避免因导入整文件保留其他模型实现。
+- 量化注册及相关分支：必须先确定支持哪些 FP8、MXFP4、NVFP4 权重与布局，不能由“单模型”直接推导“单量化实现”。
+- 其他平台和 CUDA 构建目标：需要构建、打包与 B300 实测验证后单独裁剪；仅删除 Python 分支不能证明二进制依赖可移除。
 
 ## 可复查的裁剪工具
 
@@ -68,15 +90,15 @@
 
 ## 当前验证
 
-本地已通过 36 项注册表边界测试和 14 项裁剪工具测试；删除后的闭包检查无缺失依赖，剩余 2,277 个运行时 Python 文件全部通过 AST 语法解析。执行环境为 macOS ARM64，没有安装本项目的完整 GPU 运行依赖。
+本地独立运行路径测试包括注册表 36 项、草稿配置 17 项、预热 9 项、分派/DSpark 后端 16 项和共享包导入 1 项，合计 79 项；裁剪工具另有 14 项测试，全部通过。删除后的闭包检查无缺失依赖，2,187 个运行时 Python 文件的语法解析全部通过。执行环境为 macOS ARM64，没有安装本项目的完整 GPU 运行依赖。
 
-改动的 Python 文件通过仓库固定版本的 Ruff 检查及格式检查。完整 pre-commit 在安装 `actionlint` 的 Go 依赖时因 `proxy.golang.org` 网络超时退出；提交时跳过本次未涉及的 GitHub Actions 检查，继续执行其余适用钩子。两组独立测试已接入 `.buildkite/test_areas/deepseek_v41.yaml` 的 CPU 任务，远程 CI 尚未运行。
+独立测试已接入 `.buildkite/test_areas/deepseek_v41.yaml` 的 CPU 任务，本轮远程 CI 尚未运行。检查使用仓库固定版本的 Ruff、格式及类型检查；此前 `actionlint` 的 Go 依赖下载因 `proxy.golang.org` 网络超时失败，本轮也仅跳过未涉及的 GitHub Actions 检查。
 
-独立测试运行生产注册表源码，通过依赖替身隔离 Torch/CUDA；验证目标和草稿解析、拒绝其他架构、拒绝混合架构列表、拒绝替代实现与注册覆盖。裁剪测试使用临时 Git 仓库，验证依赖保留、实际删除、用户修改保护、计划失效及动态加载边界。
+独立测试运行生产模块源码，通过依赖替身隔离 Torch/CUDA、HF 及 Pydantic；验证注册入口、DSpark 配置转换、预热顺序和进程边界、后端继承及导入副作用。它们不替代真实 Pydantic 字段校验或 HF 元数据加载。裁剪测试使用临时 Git 仓库，验证依赖保留、实际删除、用户修改保护、计划失效及动态加载边界。
 
 ```bash
 .venv/bin/python -m pytest --confcutdir=tests/standalone_tests \
-  tests/standalone_tests/test_deepseek_v41_registry.py -q
+  tests/standalone_tests/test_deepseek_v41_*.py -q
 .venv/bin/python -m pytest --confcutdir=tests/tools \
   tests/tools/test_prune_models.py -q
 ```
@@ -124,7 +146,7 @@ uv pip install -r requirements/test/cuda.in
 
 ## 性能评估方法
 
-目前没有可报告的 B300 性能提升数值。本次没有更换 V4.1 CUDA 算子、权重精度、调度算法或通信实现，因此不能从源码删除比例推导吞吐提升、延迟降低或显存节省。优先收益是代码范围、支持边界和后续维护成本。
+目前没有可报告的 B300 性能提升数值。本轮减少了其他模型的导入、无关预热调用和条件分支，但没有更换 V4.1 CUDA 算子、权重精度、调度算法或通信实现，不能从源码删除比例推导吞吐提升、延迟降低或显存节省。冷启动耗时是否改善也需实测；已明确的收益是代码范围、支持边界和后续维护成本。
 
 在同一 B300 集群分别安装基线和本分支，固定模型 revision、量化、驱动、依赖、GPU 拓扑、并行配置及环境变量；两边显式传入相同权重，避免默认模型变化造成错误比较。分别记录安装目录/镜像大小、启动到健康检查的耗时、CPU RSS、GPU 峰值显存，以及稳态吞吐、TTFT、TPOT、P95/P99 延迟、错误率和取消请求后的资源回收。
 
