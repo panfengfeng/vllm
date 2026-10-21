@@ -40,6 +40,10 @@ tests/distributed/test_weight_transfer_nccl_uid.py  # sibling test_weight_transf
 # tests/entrypoints/cli/
 tests/entrypoints/cli/test_serve.py  # added by #53124 (2026-09-15); no job collects tests/entrypoints/cli/
 
+# tests/evals/ - shared evaluation infrastructure retained by the V4.1 fork.
+tests/evals/gsm8k/test_gsm8k_offloading.py  # old model cases await V4.1 migration and GPU validation; excluded from V4.1 acceptance CI
+tests/evals/mrcr/test_mrcr_correctness.py  # manual runner requires a site-provided V4.1 config and measured baseline
+
 # tests/kernels/
 tests/kernels/test_shuffle_rows.py  # explicitly --ignore'd in kernels.yaml with no follow-up job
 

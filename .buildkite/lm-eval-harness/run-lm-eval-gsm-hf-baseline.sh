@@ -40,6 +40,11 @@ while getopts "m:b:l:f:" OPT; do
   esac
 done
 
+: "${MODEL:?Pass -m explicitly}"
+: "${LIMIT:?Pass -l explicitly}"
+: "${BATCH_SIZE:?Pass -b explicitly}"
+: "${FEWSHOT:?Pass -f explicitly}"
+
 lm_eval --model hf \
   --model_args "pretrained=$MODEL,parallelize=True" \
   --tasks gsm8k --num_fewshot "$FEWSHOT" --limit "$LIMIT" \

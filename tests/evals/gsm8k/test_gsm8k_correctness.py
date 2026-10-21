@@ -5,7 +5,7 @@ Replacement for lm-eval-harness with better performance and control.
 
 Usage:
 pytest -s -v tests/evals/gsm8k/test_gsm8k_correctness.py \
-    --config-list-file=configs/models-small.txt
+    --config-list-file=configs/models-deepseek-v41.txt
 """
 
 import shlex
@@ -91,45 +91,6 @@ def test_gsm8k_correctness(config_filename):
     """Test GSM8K correctness for a given model configuration."""
     eval_config = yaml.safe_load(config_filename.read_text(encoding="utf-8"))
 
-    if (
-        not current_platform.is_cuda()
-        and "Qwen3-30B-A3B-MXFP4A16" in eval_config["model_name"]
-    ):
-        pytest.skip(
-            "Skipping Qwen3-30B-A3B-MXFP4A16 on non-CUDA platforms. "
-            "Marlin kernels are not supported."
-        )
-
-    if (
-        not current_platform.is_cuda()
-        and "gemma-4-E4B-it-qat-mobile-ct" in eval_config["model_name"]
-    ):
-        pytest.skip(
-            "Skipping gemma-4-E4B-it-qat-mobile-ct on non-CUDA platforms. "
-            "Its W2A16 (uint2b2) scheme has no kernel outside CUDA."
-        )
-
-    if current_platform.is_rocm() and (
-        "deepseek-ai/DeepSeek-V3.2" in eval_config["model_name"]
-        or "deepseek-ai/DeepSeek-R1" in eval_config["model_name"]
-    ):
-        from vllm.platforms.rocm import get_cdna_version
-
-        if get_cdna_version() < 4:
-            pytest.skip(
-                "Skipping DeepSeek-V3.2 and DeepSeek-R1 on ROCm platforms below "
-                "CDNA 4 due to agent pool disk space issues and pod evictions."
-            )
-    if current_platform.is_rocm() and (
-        "Qwen3.5-35B-A3B-MXFP4-AITER-TP2" in config_filename.name
-    ):
-        from vllm.platforms.rocm import on_gfx950
-
-        if not on_gfx950():
-            pytest.skip(
-                "Skipping Qwen3.5-35B-A3B-MXFP4-AITER-TP2 on non-GFX950 platforms. "
-                "The quantization scheme is not supported on non-GFX950 platforms."
-            )
     if "--all2all-backend=moonep" in eval_config.get("server_args", ""):
         from vllm.utils.import_utils import has_moonep
 

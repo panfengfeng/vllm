@@ -1,56 +1,46 @@
-# GSM8K Accuracy Evaluation
+# DeepSeek V4.1 GSM8K Accuracy Evaluation
 
-This directory contains a replacement for the lm-eval-harness GSM8K evaluation, using an isolated GSM8K script and vLLM server for better performance and control.
+The retained configuration is
+[`configs/DeepSeek-V4.1-Flash-NVFP4-DSpark-TP4.yaml`](configs/DeepSeek-V4.1-Flash-NVFP4-DSpark-TP4.yaml).
+It evaluates `nvidia/DeepSeek-V4.1-Flash-NVFP4` with TP4, five DSpark draft tokens,
+1,319 questions and five few-shot examples. Its existing accuracy threshold is
+0.88 with 0.03 tolerance (minimum passing accuracy 0.85), and its minimum mean
+acceptance length is 2.5. These thresholds have not been validated on B300 for
+this specialized branch.
 
-## Usage
+## Run the retained evaluation
 
-### Run tests with pytest (like buildkite)
-
-```bash
-pytest -s -v tests/evals/gsm8k/test_gsm8k_correctness.py \
-    --config-list-file=configs/models-small.txt
-```
-
-### Run standalone evaluation script
-
-```bash
-# Start vLLM server first
-vllm serve Qwen/Qwen2.5-1.5B-Instruct --port 8000
-
-# Run evaluation
-python tests/evals/gsm8k/gsm8k_eval.py --port 8000
-```
-
-For chat-only models, send the prompts through `/v1/chat/completions`:
+From the repository root, in an environment with the GPU evaluation dependencies:
 
 ```bash
-python tests/evals/gsm8k/gsm8k_eval.py --port 8000 \
-    --use-chat-completions --max-tokens 1024 \
-    --chat-template-kwargs '{"enable_thinking": false}'
+.venv/bin/python -m pytest -s -v tests/evals/gsm8k/test_gsm8k_correctness.py \
+    --config-list-file=configs/models-deepseek-v41.txt
 ```
 
-The server applies the chat template and uses its served model, so `--model` is
-optional. In chat mode, `temperature` is sent only when `--temperature` is given,
-so the server's default sampling applies otherwise; completions mode keeps the
-default of 0. Chat mode sends no stop strings; completions mode keeps them.
-`--reasoning-effort`, `--top-p`, and `--top-k` set the matching request fields
-when given. With a reasoning parser, only the final answer `content` is scored.
-`--save-results` records the request settings used.
+This list is also the pytest default. The CI job retains the existing optional
+4×B200 allocation and 120-minute timeout; it is not a B300 acceptance result.
+The test starts its own server and requires access to the configured checkpoint.
 
-## Configuration Format
+For another deployment, provide a config list explicitly. Each non-comment line
+names a YAML relative to the list's directory. Copy the retained configuration
+and set the checkpoint, server arguments and locally established quality
+thresholds. Missing lists, missing YAML files and empty lists are errors.
 
-Model configs in `configs/` directory use this YAML format:
+## Evaluate an already running server
 
-```yaml
-model_name: "Qwen/Qwen2.5-1.5B-Instruct"
-accuracy_threshold: 0.54  # Minimum expected accuracy
-num_questions: 1319       # Number of questions (default: full test set)
-num_fewshot: 5            # Few-shot examples from train set
-server_args: "--max-model-len 4096 --tensor-parallel-size 2 --moe-backend flashinfer_cutlass"  # Server arguments
-env:                      # Environment variables (optional)
-  VLLM_LOGGING_LEVEL: "DEBUG"
+```bash
+.venv/bin/python tests/evals/gsm8k/gsm8k_eval.py --port 8000
 ```
 
-The `server_args` field accepts any arguments that can be passed to `vllm serve`.
+The standalone runner discovers the served model when `--model` is omitted.
+Use `--use-chat-completions` when evaluating chat prompts, and set generation
+parameters explicitly for comparisons. `--save-results` records the request
+settings used. The server-based pytest path additionally checks that DSpark
+acceptance counters show useful drafts; accuracy alone does not establish that.
 
-The `env` field accepts a dictionary of environment variables to set for the server process.
+## KV offloading coverage
+
+`test_gsm8k_offloading.py` retains generic KV offload/reload regression logic.
+Its legacy model fixtures have not been migrated to V4.1 and are excluded from
+the specialized CI job. Running that suite is not part of this branch's current
+V4.1 acceptance set.

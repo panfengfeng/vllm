@@ -45,6 +45,12 @@ while getopts "m:b:l:f:t:" OPT; do
   esac
 done
 
+: "${MODEL:?Pass -m explicitly}"
+: "${LIMIT:?Pass -l explicitly}"
+: "${BATCH_SIZE:?Pass -b explicitly}"
+: "${FEWSHOT:?Pass -f explicitly}"
+: "${TP_SIZE:?Pass -t explicitly}"
+
 lm_eval --model vllm \
   --model_args "pretrained=$MODEL,tensor_parallel_size=$TP_SIZE,add_bos_token=true,trust_remote_code=true,max_model_len=4096" \
   --tasks gsm8k --num_fewshot "$FEWSHOT" --limit "$LIMIT" \

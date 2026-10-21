@@ -104,7 +104,7 @@ Inside this example:
 - The `client-parameters` includes the command line arguments for `vllm bench serve`.
 - The `qps_list` controls the list of qps for test. It will be used to configure the `--request-rate` parameter in `vllm bench serve`
 
-The number of this test is less stable compared to the delay and latency benchmarks (due to randomized sharegpt dataset sampling inside `benchmark_serving.py`), but a large change on this number (e.g. 5% change) still vary the output greatly.
+The number of this test is less stable compared to the delay and latency benchmarks (due to randomized sharegpt dataset sampling inside `vllm bench serve`), but a large change on this number (e.g. 5% change) still vary the output greatly.
 
 WARNING: The benchmarking script will save json results by itself, so please do not configure `--save-results` or other results-saving-related parameters in `serving-tests.json`.
 

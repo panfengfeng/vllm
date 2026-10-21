@@ -22,7 +22,6 @@ steps:
         CUDA_VISIBLE_DEVICES=0,1 pytest -v -s model_executor/model_loader/test_sharded_state_loader.py -m '(not slow_test)'
         ;;
       1)
-        pytest models/transformers/test_backend.py -v -s -m 'distributed(num_gpus=2)'
         pytest models/language -v -s -m 'distributed(num_gpus=2)'
         ;;
       2)
@@ -66,7 +65,6 @@ steps:
             HIP_VISIBLE_DEVICES=0,1 pytest -v -s model_executor/model_loader/test_sharded_state_loader.py -m '(not slow_test)'
             ;;
           1)
-            pytest models/transformers/test_backend.py -v -s -m 'distributed(num_gpus=2)' &&
             pytest models/language -v -s -m 'distributed(num_gpus=2)' &&
             VLLM_ROCM_USE_AITER=1 pytest -v -s models/test_hyv4_rocm.py -m 'distributed(num_gpus=2)'
             ;;

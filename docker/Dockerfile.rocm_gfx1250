@@ -243,7 +243,6 @@ COPY --from=build_vllm ${COMMON_WORKDIR}/vllm/requirements /requirements
 COPY --from=build_vllm ${COMMON_WORKDIR}/vllm/benchmarks /benchmarks
 COPY --from=build_vllm ${COMMON_WORKDIR}/vllm/tests /tests
 COPY --from=build_vllm ${COMMON_WORKDIR}/vllm/examples /examples
-COPY --from=build_vllm ${COMMON_WORKDIR}/vllm/tools/install_torchcodec_rocm.sh /tools/install_torchcodec_rocm.sh
 COPY --from=build_vllm ${COMMON_WORKDIR}/vllm/docker/Dockerfile.rocm /docker/
 COPY --from=build_vllm ${COMMON_WORKDIR}/vllm/.buildkite /.buildkite
 COPY --from=build_vllm ${COMMON_WORKDIR}/vllm/pyproject.toml /pyproject.toml
@@ -500,12 +499,6 @@ RUN echo "Checking for git-based packages in requirements files..." \
        fi \
     && echo "All requirements files are clean - no git-based packages found"
 
-# Pin vLLM dependencies to exact versions of custom ROCm wheels
-# This ensures 'pip install vllm' automatically installs correct torch/triton/torchvision/amdsmi
-COPY tools/vllm-rocm/pin_rocm_dependencies.py /tmp/pin_rocm_dependencies.py
-RUN echo "Pinning vLLM dependencies to custom wheel versions..." \
-    && python3 /tmp/pin_rocm_dependencies.py /install ${COMMON_WORKDIR}/vllm/requirements/rocm.txt
-
 # Install dependencies using custom wheels from /install
 RUN --mount=type=cache,target=/root/.cache/uv \
     cd vllm \
@@ -528,7 +521,6 @@ COPY --from=build_vllm_wheel_release ${COMMON_WORKDIR}/vllm/requirements /requir
 COPY --from=build_vllm_wheel_release ${COMMON_WORKDIR}/vllm/benchmarks /benchmarks
 COPY --from=build_vllm_wheel_release ${COMMON_WORKDIR}/vllm/tests /tests
 COPY --from=build_vllm_wheel_release ${COMMON_WORKDIR}/vllm/examples /examples
-COPY --from=build_vllm_wheel_release ${COMMON_WORKDIR}/vllm/tools/install_torchcodec_rocm.sh /tools/install_torchcodec_rocm.sh
 COPY --from=build_vllm_wheel_release ${COMMON_WORKDIR}/vllm/docker/Dockerfile.rocm /docker/
 COPY --from=build_vllm_wheel_release ${COMMON_WORKDIR}/vllm/.buildkite /.buildkite
 COPY --from=build_vllm_wheel_release ${COMMON_WORKDIR}/vllm/pyproject.toml /pyproject.toml
@@ -576,15 +568,6 @@ RUN timeout --kill-after=30s 5m apt-get update -q -y --error-on=any \
     pkg-config ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
     libswscale-dev libavdevice-dev libavfilter-dev libswresample-dev \
     && rm -rf /var/lib/apt/lists/*
-
-# Install torchcodec from source for ROCm/torch ABI compatibility.
-COPY tools/install_torchcodec_rocm.sh /tmp/install_torchcodec.sh
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=cache,target=/root/.cache/torchcodec-wheels \
-    bash /tmp/install_torchcodec.sh \
-    && rm /tmp/install_torchcodec.sh \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Pre-install shared ROCm runtime dependencies.
 COPY requirements/common.txt requirements/rocm.txt /tmp/ci-base-requirements/

@@ -4,7 +4,7 @@
 
 Usage:
     pytest -s -v tests/evals/mrcr/test_mrcr_correctness.py \
-        --config-list-file=configs/models-small.txt
+        --config-list-file=/path/to/mrcr-configs.txt
 """
 
 import shlex

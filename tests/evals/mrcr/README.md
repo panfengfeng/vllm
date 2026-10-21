@@ -1,44 +1,44 @@
 # MRCR Long-Context Accuracy Evaluation
 
-Smoke test for long-context behavior using OpenAI's public [`openai/mrcr`](https://huggingface.co/datasets/openai/mrcr) dataset. The model sees a long chat with several near-duplicate "needles" and must reproduce a specific earlier assistant turn verbatim, prepended with a random anti-guessing string.
+The generic runner evaluates long-context retrieval with the public
+[`openai/mrcr`](https://huggingface.co/datasets/openai/mrcr) dataset. Responses
+must reproduce a selected earlier assistant turn after a random prefix.
+Scoring checks the prefix, then measures text similarity against the reference.
 
-**Scoring:** if the response doesn't start with `random_string_to_prepend`, score is 0; otherwise the prefix is stripped and the mean `SequenceMatcher.ratio()` against the reference answer is reported.
+The old Qwen configuration has been removed. No V4.1 quality threshold is
+bundled: establish one on the intended checkpoint, context length and hardware
+before using this evaluation as a pass/fail gate. B300 has not been validated.
 
-## Usage
+## Measure an already running V4.1 server
 
 ```bash
-# Pytest (spawns the server)
-pytest -s -v tests/evals/mrcr/test_mrcr_correctness.py \
-    --config-list-file=configs/models-small.txt
-
-# Standalone (server already running; model and context auto-discovered)
-vllm serve Qwen/Qwen3-0.6B --reasoning-parser qwen3 --port 8000
-python tests/evals/mrcr/mrcr_eval.py --port 8000
+.venv/bin/python tests/evals/mrcr/mrcr_eval.py --port 8000
 ```
 
-## Configuration
+The runner discovers the served model and context limit. `--max-prompt-tokens`
+can cap context length; keep the prompt budget, sample count, generation budget
+and concurrency fixed when comparing results. This standalone command reports
+measurements without supplying an unvalidated quality threshold.
 
-```yaml
-model_name: "Qwen/Qwen3-0.6B"
-# Per-needle thresholds catch bucket-specific regressions (sliding window,
-# chunked prefill, prefix cache) that an aggregate can hide. A scalar
-# (e.g. `match_ratio_threshold: 0.20`) is also accepted and checked against
-# the mean match ratio.
-match_ratio_threshold:
-  2: 0.30
-  4: 0.15
-  8: 0.10
-num_samples: 30
-needles: [2, 4, 8]
-# max_prompt_tokens: 32768       # Optional; defaults to server max_model_len - max_tokens - 256
-max_tokens: 2048
-concurrency: 8
-server_args: "--max-model-len 32768 --reasoning-parser qwen3"
+## Run a configured quality gate
+
+Create an evaluation YAML and a text file listing its path relative to the list
+file's directory, then pass the list explicitly:
+
+```bash
+: "${MRCR_CONFIG_LIST:?Set the path to your MRCR evaluation config list}"
+.venv/bin/python -m pytest -s -v tests/evals/mrcr/test_mrcr_correctness.py \
+    --config-list-file="$MRCR_CONFIG_LIST"
 ```
 
-## Notes
+The YAML requires `model_name` and `match_ratio_threshold`. The latter can be a
+scalar or a mapping from needle counts to thresholds; derive these values from
+your measured baseline. Optional fields include `tolerance`, `server_args`,
+`startup_max_wait_seconds`, `num_samples`, `needles`, `max_prompt_tokens`,
+`max_tokens`, `concurrency`, `env` and `extra_body`. Specify the server options
+needed by your V4.1 checkpoint and available hardware. The pytest runner starts
+its own server. Missing lists, missing YAML files and empty lists are errors.
 
-- Samples stream from three parquet shards (`{N}needle/{N}needle_0.parquet`); only the first few row groups are fetched, not the full 1.4 GB repo.
-- `max_prompt_tokens` defaults to `max_model_len - max_tokens - 256`, i.e. fills whatever context the server advertises. Set `--max-model-len` on the server to control the smoke-test context length; override `--max-prompt-tokens` on the client to cap below that.
-- Sample length is pre-filtered by `n_chars × 4 ≤ max_prompt_tokens`, then verified via the server's `/tokenize` endpoint under the actual chat template.
-- Reasoning models: start the server with `--reasoning-parser <name>` (e.g. `qwen3`, `deepseek_r1`) so `<think>` goes to `message.reasoning_content` and doesn't contaminate the scored answer.
+Samples stream from dataset shards and are filtered against the actual server's
+tokenized chat length. Preserve the same dataset and prompt settings across
+baseline and candidate runs.

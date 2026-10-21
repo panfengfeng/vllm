@@ -36,6 +36,10 @@ while getopts "m:l:t:" OPT; do
   esac
 done
 
+: "${MODEL:?Pass -m explicitly}"
+: "${LIMIT:?Pass -l explicitly}"
+: "${TP_SIZE:?Pass -t explicitly}"
+
 lm_eval --model vllm-vlm \
   --model_args "pretrained=$MODEL,tensor_parallel_size=$TP_SIZE" \
   --tasks chartqa \

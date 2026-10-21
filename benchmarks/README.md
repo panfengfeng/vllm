@@ -1,15 +1,32 @@
 # Benchmarks
 
-This directory used to contain vLLM's benchmark scripts and utilities for performance testing and evaluation.
+This directory contains kernel, distributed, and feature benchmarks retained for
+the DeepSeek V4.1 specialized fork, along with shared benchmark utilities.
+Selected benchmarks for unsupported models and platforms have been pruned.
 
 ## Contents
 
-- **Serving benchmarks**: Scripts for testing online inference performance (latency, throughput)
-- **Throughput benchmarks**: Scripts for testing offline batch inference performance
-- **Specialized benchmarks**: Tools for testing specific features like structured output, prefix caching, long document QA, request prioritization, and multi-modal inference
-- **Dataset utilities**: Framework for loading and sampling from various benchmark datasets (ShareGPT, HuggingFace datasets, synthetic data, etc.)
+- **Kernel and distributed benchmarks**: Microbenchmarks for attention, MoE,
+  quantization, and communication.
+- **Feature benchmarks**: Tools for structured output, prefix caching, long
+  document QA, request prioritization, and multi-turn serving.
+- **Shared utilities**: Request clients and timing helpers used by these benchmarks.
 
 ## Usage
+
+The primary serving, latency, and throughput benchmarks live in the vLLM CLI.
+The deprecated `benchmark_serving.py`, `benchmark_latency.py`, and
+`benchmark_throughput.py` wrappers have been removed. Use:
+
+```bash
+vllm bench serve --help
+vllm bench latency --help
+vllm bench throughput --help
+```
+
+Dataset loading and sampling are implemented in `vllm/benchmarks/datasets/`.
+When a retained benchmark loads a model, select the supported DeepSeek V4.1
+checkpoint explicitly; examples inherited from upstream may name other models.
 
 For detailed usage instructions, examples, and dataset information, see the [Benchmark CLI documentation](https://docs.vllm.ai/en/latest/benchmarking/cli/#benchmark-cli).
 

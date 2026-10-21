@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """LM eval harness on model to compare vs HF baseline computed offline.
-Configs are found in configs/$MODEL.yaml
+Supply an explicit config list with locally established task baselines.
 
 pytest -s -v test_lm_eval_correctness.py \
-    --config-list-file=configs/models-small.txt \
+    --config-list-file=/path/to/lm-eval-configs.txt \
     --tp-size=1
 """
 
@@ -117,9 +117,6 @@ def launch_lm_eval(eval_config, tp_size):
         f"max_model_len={max_model_len},"
         "allow_deprecated_quantization=True,"
     )
-
-    if current_platform.is_rocm() and "Nemotron-3" in eval_config["model_name"]:
-        model_args += "attention_backend=TRITON_ATTN"
 
     moe_backend = eval_config.get("moe_backend", None)
     if moe_backend is not None:

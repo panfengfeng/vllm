@@ -122,32 +122,6 @@ steps:
       depends_on:
       - image-build-amd
 
-- label: ":nvidia: (H200 MIG 35GB) Multimodal Accuracy Eval (Small Models)"
-  device: h200_35gb
-  key: multi-modal-accuracy-eval-small-models
-  timeout_in_minutes: 30
-  working_dir: "/vllm-workspace/.buildkite/lm-eval-harness"
-  source_file_dependencies:
-  - vllm/multimodal/
-  - vllm/inputs/
-  - vllm/v1/core/
-  commands:
-  - pytest -s -v test_lm_eval_correctness.py --config-list-file=configs/models-mm-small.txt --tp-size=1
-  mirror:
-    amd:
-      label: ":amd: (MI355 DPX) Multimodal Accuracy Eval (Small Models)"
-      dind: false
-      device: mi355_dpx
-      timeout_in_minutes: 35
-      depends_on:
-      - image-build-amd
-      source_file_dependencies:
-      - vllm/multimodal/
-      - vllm/inputs/
-      - vllm/v1/core/
-      - vllm/platforms/rocm.py
-      - vllm/model_executor/model_loader/
-
 - label: ":nvidia: (H200 MIG 35GB) Multimodal Models (Extended Generation 1)"
   device: h200_35gb
   key: multi-modal-models-extended-generation-1
