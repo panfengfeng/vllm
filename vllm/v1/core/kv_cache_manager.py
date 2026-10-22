@@ -9,19 +9,13 @@ from typing import Literal, overload
 from vllm.distributed.kv_events import BlockStored, KVCacheEvent
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm.v1.core.kv_cache_coordinator import (
-    HybridKVCacheCoordinator,
-    get_kv_cache_coordinator,
-)
+from vllm.v1.core.kv_cache_coordinator import get_kv_cache_coordinator
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import KVCacheBlock, KVCacheBlockCopy
-from vllm.v1.core.single_type_kv_cache_manager import MambaManager
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
-    CrossAttentionSpec,
     EncoderOnlyAttentionSpec,
     KVCacheConfig,
-    MambaSpec,
     get_kv_cache_spec_kind,
     get_kv_cache_spec_sliding_window,
 )
@@ -145,7 +139,6 @@ class KVCacheManager:
         pcp_world_size: int = 1,
         metrics_collector: KVCacheMetricsCollector | None = None,
         watermark: float = 0.0,
-        enable_mamba_shared_prefix_checkpoint: bool = False,
     ) -> None:
         self.max_model_len = max_model_len
         # When unset, fall back to `max_model_len` so the recycling-aware cap
@@ -178,21 +171,6 @@ class KVCacheManager:
             metrics_collector=self.metrics_collector,
             num_prefill_lookahead=num_prefill_lookahead,
         )
-        # One predicate, read by both sides of the feature, so the scheduler
-        # cannot end a chunk at a junction the manager would refuse -- a refused
-        # junction costs a forward pass and displaces the block-boundary stop.
-        # Multi-module MTP is excluded because ``cache_blocks`` then hands the
-        # manager ``num_computed - num_reprefillable`` rather than the chunk end.
-        self.mamba_shared_prefix_checkpoint = (
-            enable_mamba_shared_prefix_checkpoint
-            and bool(self.coordinator.eagle_group_ids)
-            and self.coordinator.enable_partial_hash_hits
-            and self.coordinator.num_reprefillable_tokens == 0
-        )
-        if self.mamba_shared_prefix_checkpoint:
-            for manager in self.coordinator.single_type_managers:
-                if isinstance(manager, MambaManager):
-                    manager.shared_prefix_checkpoint = True
         self.num_kv_cache_groups = len(kv_cache_config.kv_cache_groups)
         self.block_pool = self.coordinator.block_pool
         self.retained_hit_group_ids = tuple(
@@ -320,54 +298,6 @@ class KVCacheManager:
         blocks = self.create_kv_cache_blocks(computed_blocks)
         return blocks, num_new_computed_tokens, shared_prefix_boundary
 
-    def get_computed_blocks_for_connector(
-        self, request: Request
-    ) -> tuple[KVCacheBlocks, int, int, bool]:
-        """Local prefix-cache lookup for a request scheduled with a KV connector.
-
-        Hybrid (Mamba + full-attention) models can have per-group prefix hits
-        diverge under block pressure: the full-attention tail may be evicted
-        while a deeper Mamba state survives, or vice versa. Report the
-        full-attention hit as the local prefix - the connector transfers the
-        remaining suffix and the Mamba state is transferred unconditionally by
-        nixl's ``_apply_prefix_caching`` - and flag when that hit ran deeper
-        than a lagging group. Such a hit only has a valid Mamba state at its
-        boundary if the connector supplies it, so the caller must fall back to
-        ``get_computed_blocks`` to reconcile when no external tokens are found.
-
-        Non-hybrid models and already-convergent hits use ``get_computed_blocks``.
-
-        Returns:
-            The ``get_computed_blocks`` triple (blocks, number of local computed
-            tokens, shared-prefix boundary) plus ``hit_diverged``.
-
-        """
-        coordinator = self.coordinator
-        if not (
-            self.kv_cache_config.has_mamba_layers
-            and isinstance(coordinator, HybridKVCacheCoordinator)
-            and coordinator.full_attention_group_id is not None
-        ):
-            return *self.get_computed_blocks(request), False
-
-        if not self.prefix_cache_lookup_enabled(request):
-            return self.empty_kv_cache_blocks, 0, 0, False
-
-        fa_group_id = coordinator.full_attention_group_id
-        computed, per_group_hits = coordinator.find_longest_cache_hit_per_group(
-            request.block_hashes, request.num_tokens - 1
-        )
-        if any(hit > per_group_hits[fa_group_id] for hit in per_group_hits):
-            # A lagging group hit deeper than full attention means its
-            # full-attention blocks were evicted; use the reconciled boundary
-            # that every group agrees on.
-            return *self.get_computed_blocks(request), False
-
-        num_local = per_group_hits[fa_group_id]
-        blocks = self.create_kv_cache_blocks(computed)
-        # Per-group lookups do not detect an uncached shared prefix (boundary 0).
-        return blocks, num_local, 0, min(per_group_hits) < num_local
-
     def allocate_slots(
         self,
         request: Request,
@@ -377,7 +307,6 @@ class KVCacheManager:
         num_lookahead_tokens: int = 0,
         num_external_computed_tokens: int = 0,
         delay_cache_blocks: bool = False,
-        num_encoder_tokens: int = 0,
         full_sequence_must_fit: bool = False,
         reserved_blocks: int = 0,
         has_scheduled_reqs: bool = True,
@@ -400,9 +329,6 @@ class KVCacheManager:
             delay_cache_blocks: Whether to skip caching the blocks. This is
                 used by P/D when allocating blocks used in a KV transfer
                 which will complete in a future step.
-            num_encoder_tokens: The number of encoder tokens to allocate for
-                cross-attention in encoder-decoder models(e.g., Whisper).
-                For decoder-only models, this should be 0.
             full_sequence_must_fit: Only allocate blocks if the KV cache has enough
                 free blocks to hold the full sequence, accounting for prefix cache hits
                 and sliding window. Used as an admission gate to prevent over-admitting
@@ -527,7 +453,7 @@ class KVCacheManager:
                 request_id=request.request_id,
                 num_tokens=full_num_tokens,
                 new_computed_blocks=new_computed_block_list,
-                num_encoder_tokens=num_encoder_tokens,
+                num_encoder_tokens=0,
                 total_computed_tokens=total_computed_tokens,
                 num_local_computed_tokens=num_local_computed_tokens,
                 num_tokens_main_model=full_num_tokens,
@@ -562,7 +488,7 @@ class KVCacheManager:
             request_id=request.request_id,
             num_tokens=num_tokens_need_slot,
             new_computed_blocks=new_computed_block_list,
-            num_encoder_tokens=num_encoder_tokens,
+            num_encoder_tokens=0,
             total_computed_tokens=num_local_computed_tokens
             + num_external_computed_tokens,
             num_local_computed_tokens=num_local_computed_tokens,
@@ -596,7 +522,7 @@ class KVCacheManager:
             request.request_id,
             num_tokens_need_slot,
             num_tokens_main_model,
-            num_encoder_tokens,
+            0,
         )
 
         # P/D: delay caching blocks if we have to recv from
@@ -769,7 +695,7 @@ class KVCacheManager:
         for group, ids in zip(self.kv_cache_config.kv_cache_groups, block_ids):
             spec = group.kv_cache_spec
             if not isinstance(spec, AttentionSpec) or isinstance(
-                spec, (CrossAttentionSpec, EncoderOnlyAttentionSpec)
+                spec, EncoderOnlyAttentionSpec
             ):
                 clipped_block_ids.append(ids)
                 continue
@@ -789,9 +715,9 @@ class KVCacheManager:
                 continue
             if isinstance(
                 group.kv_cache_spec,
-                (CrossAttentionSpec, EncoderOnlyAttentionSpec),
+                EncoderOnlyAttentionSpec,
             ):
-                # Cross-attention and encoder-only groups are not prefix cached.
+                # Encoder-only groups are not prefix cached.
                 continue
 
             group_cached_tokens = 0
@@ -832,8 +758,7 @@ class KVCacheManager:
     ) -> KVCacheBlocks:
         """Return a lookup-result view truncated at an aligned token endpoint.
 
-        An external hit can supply the final Mamba state even when the local
-        Mamba group ends before this endpoint. Other groups must cover it.
+        Every prefix-cacheable group must cover the endpoint.
         Pure slicing: refcounts are untouched and ``blocks`` is not mutated.
         """
         truncated: list[list[KVCacheBlock]] = []
@@ -853,10 +778,7 @@ class KVCacheManager:
                 continue
             assert num_computed_tokens % manager.block_size == 0
             num_blocks = num_computed_tokens // manager.block_size
-            if isinstance(group.kv_cache_spec, MambaSpec):
-                num_blocks = min(num_blocks, len(group_blocks))
-            else:
-                assert num_blocks <= len(group_blocks)
+            assert num_blocks <= len(group_blocks)
             truncated.append(list(group_blocks[:num_blocks]))
         return self.create_kv_cache_blocks(tuple(truncated))
 
@@ -897,55 +819,6 @@ class KVCacheManager:
         ]
         retained_blocks = [block for pair in pending_copies for block in pair]
         return copies, retained_blocks
-
-    def take_boundary_state_offloads(
-        self,
-    ) -> dict[str, list[tuple[int, int, int]]]:
-        """Drain this step's boundary-state hand-offs for a KV connector.
-
-        Returns ``{request_id: [(group_id, block_id, boundary_tokens), ...]}``
-        for mamba "align" boundary states: the
-        request's committed boundary-state snapshots and, on a sub-block partial
-        hit, the CoW copy of its last-prompt-boundary state. Only mamba "align"
-        groups contribute; empty otherwise. A connector reads the referenced
-        blocks — never resolving them positionally — and offloads them so a
-        later request can hit that prefix.
-        """
-        offloads: dict[str, list[tuple[int, int, int]]] = {}
-        for mgr in self.coordinator.single_type_managers:
-            for (
-                req_id,
-                group_id,
-                block,
-                boundary_tokens,
-            ) in mgr.take_pending_boundary_state_offloads():
-                offloads.setdefault(req_id, []).append(
-                    (group_id, block.block_id, boundary_tokens)
-                )
-        return offloads
-
-    def finalize_partial_tail_offloads(
-        self, request: Request
-    ) -> list[tuple[int, int, int]]:
-        """Consume safe producer partial tails when a request finishes.
-
-        A mamba align table block is a valid boundary source only if no later
-        token was forwarded. The connector pins and queues the exact table
-        block before request cleanup, then releases the pin when every worker
-        reports the store job complete.
-        """
-        offloads: list[tuple[int, int, int]] = []
-        for mgr in self.coordinator.single_type_managers:
-            finalized = mgr.finalize_partial_tail_offload(
-                request.request_id,
-                request.num_computed_tokens,
-                request.num_in_flight_tokens,
-            )
-            if finalized is None:
-                continue
-            group_id, block, boundary_tokens = finalized
-            offloads.append((group_id, block.block_id, boundary_tokens))
-        return offloads
 
     def new_step_starts(self) -> None:
         """Notify the coordinator that a new step is starting."""

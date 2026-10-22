@@ -24,7 +24,6 @@ from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheConfig,
     KVCacheGroupSpec,
-    MambaSpec,
 )
 from vllm.v1.worker.gpu.warmup import (
     _reserved_block_count,
@@ -66,20 +65,6 @@ def _circular_group() -> KVCacheGroupSpec:
     )
 
 
-def _mamba_group(mamba_cache_mode: str) -> KVCacheGroupSpec:
-    # Name carries the mode so several groups can coexist in one config.
-    return KVCacheGroupSpec(
-        [f"mamba_{mamba_cache_mode}"],
-        MambaSpec(
-            block_size=BLOCK_SIZE,
-            shapes=((1,),),
-            dtypes=(torch.float32,),
-            mamba_cache_mode=mamba_cache_mode,
-            num_speculative_blocks=NUM_SPEC_STEPS,
-        ),
-    )
-
-
 def _make_runner(
     kv_cache_groups: list[KVCacheGroupSpec],
     num_lookahead_tokens: int,
@@ -92,12 +77,10 @@ def _make_runner(
         rejection_sampler=None,
         decode_query_len=num_spec_steps + 1,
         is_pooling_model=False,
-        is_encoder_decoder=False,
         is_last_pp_rank=True,
         max_num_reqs=4,
         max_model_len=MAX_MODEL_LEN,
         model_config=SimpleNamespace(get_vocab_size=lambda: 64),
-        model_state=SimpleNamespace(max_encoder_len=0),
         scheduler_config=SimpleNamespace(max_num_seqs=4, max_num_batched_tokens=2048),
         kv_cache_config=SimpleNamespace(
             kv_cache_groups=kv_cache_groups, num_blocks=1024
@@ -196,53 +179,14 @@ def test_mixed_warmup_reserves_lookahead_blocks():
     assert set(recorder.num_spec_tokens_to_schedule) == {NUM_SPEC_STEPS}
 
 
-@pytest.mark.parametrize("mamba_cache_mode", ["none", "align"])
-def test_warmup_reserves_mamba_speculative_blocks(mamba_cache_mode):
-    """Mamba groups hold the running-state block plus the speculative tail.
-
-    `MambaManager` reserves `num_speculative_blocks` blocks past the token
-    range in every cache mode, and the mamba kernels read all
-    `1 + num_speculative_blocks` of those block-table columns (see
-    `mamba_get_block_table_tensor`).
-    """
-    recorder = _StepRecorder()
-
-    warmup_kernels(
-        _make_runner(
-            [_attention_group(), _mamba_group(mamba_cache_mode)], NUM_SPEC_STEPS
-        ),
-        recorder.execute_model,
-        recorder.sample_tokens,
-    )
-
-    assert recorder.steps, "warmup ran no steps"
-    for num_blocks, num_computed, num_scheduled in recorder.steps:
-        # `MambaManager` drops the lookahead tokens in align mode to keep the
-        # allocation block-aligned, and keeps them otherwise. Pin the token
-        # range and the speculative tail separately, so an implementation that
-        # returned a flat `1 + num_speculative_blocks` would fail.
-        if mamba_cache_mode == "align":
-            # Align mode sizes from the uncapped main-model range.
-            lookahead, num_tokens = 0, num_computed + num_scheduled
-        else:
-            lookahead = NUM_SPEC_STEPS
-            num_tokens = min(num_computed + num_scheduled + lookahead, MAX_MODEL_LEN)
-        assert num_blocks[1] == cdiv(num_tokens, BLOCK_SIZE) + NUM_SPEC_STEPS, (
-            f"{mamba_cache_mode}: {num_blocks[1]} mamba blocks for "
-            f"{num_computed}+{num_scheduled} tokens and {lookahead} lookahead"
-        )
-
-
-def _hybrid_kv_cache_config(num_blocks: int) -> KVCacheConfig:
-    """Attention, circular, and Mamba groups exercise every reservation branch."""
+def _mixed_kv_cache_config(num_blocks: int) -> KVCacheConfig:
+    """Exercise token-indexed and circular cache reservations together."""
     return KVCacheConfig(
         num_blocks=num_blocks,
         kv_cache_tensors=[],
         kv_cache_groups=[
             _attention_group(),
             _circular_group(),
-            _mamba_group("none"),
-            _mamba_group("align"),
         ],
     )
 
@@ -269,7 +213,7 @@ def test_reserved_block_count_matches_real_kv_cache_manager():
     num_lookahead_tokens = NUM_SPEC_STEPS + 1
     decode_query_len = NUM_SPEC_STEPS + 1
 
-    kv_cache_config = _hybrid_kv_cache_config(num_blocks=256)
+    kv_cache_config = _mixed_kv_cache_config(num_blocks=256)
     specs = [g.kv_cache_spec for g in kv_cache_config.kv_cache_groups]
     manager = make_kv_cache_manager(
         kv_cache_config,
@@ -299,11 +243,9 @@ def test_reserved_block_count_matches_real_kv_cache_manager():
                 spec,
                 num_lookahead_tokens=num_lookahead_tokens,
                 max_model_len=MAX_MODEL_LEN,
-                max_encoder_len=0,
             )
             assert len(group_held) == expected, (
-                f"{type(spec).__name__} "
-                f"mode={getattr(spec, 'mamba_cache_mode', None)}: real manager "
+                f"{type(spec).__name__}: real manager "
                 f"holds {len(group_held)} blocks for {num_tokens} tokens, "
                 f"_reserved_block_count predicts {expected}"
             )

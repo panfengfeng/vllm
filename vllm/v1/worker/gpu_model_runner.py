@@ -6878,7 +6878,6 @@ class GPUModelRunner(
     def initialize_attn_backend(
         self,
         kv_cache_config: KVCacheConfig,
-        is_profiling: bool = False,
     ) -> None:
         """Initialize the attention backends and attention metadata builders."""
         assert len(self.attn_groups) == 0, "Attention backends are already initialized"
@@ -6971,7 +6970,6 @@ class GPUModelRunner(
         self._check_and_update_cudagraph_mode(
             attention_backend_list,
             kv_cache_config.kv_cache_groups,
-            is_profiling=is_profiling,
         )
 
         # Check if attention backend supports PCP&DCP and related features.
@@ -7016,7 +7014,6 @@ class GPUModelRunner(
         self,
         attention_backends: list[set[type[AttentionBackend]]],
         kv_cache_groups: list[KVCacheGroupSpec],
-        is_profiling: bool = False,
     ) -> None:
         """Resolve the cudagraph_mode when there are multiple attention
         groups with potential conflicting CUDA graph support.
@@ -7043,9 +7040,6 @@ class GPUModelRunner(
             min_cg_attn_backend,
             self.uniform_decode_query_len,
             use_v2_model_runner=False,
-            kv_cache_config=self.kv_cache_config,
-            max_num_reqs=self.max_num_reqs,
-            is_profiling=is_profiling,
         )
         # Trigger cudagraph dispatching keys initialization after
         # resolved cudagraph mode.
@@ -7265,7 +7259,7 @@ class GPUModelRunner(
         self._mamba_state_copy_funcs = None
         self.may_add_encoder_only_layers_to_kv_cache_config()
         self.maybe_add_kv_sharing_layers_to_kv_cache_groups(kv_cache_config)
-        self.initialize_attn_backend(kv_cache_config, is_profiling=is_profiling)
+        self.initialize_attn_backend(kv_cache_config)
         initialize_mamba_ssu_backend(
             self.vllm_config.mamba_config,
             self.kv_cache_config,

@@ -129,6 +129,22 @@ MRCR 与通用 LM Eval runner 保留，要求显式提供配置清单；缺省�
 
 `csrc/` 中大部分 CPU／ROCm 文件原本就不参与 CUDA 编译，删除它们主要减少仓库与维护范围。非目标 CUDA 源文件移除可能减少编译工作及扩展体积，但尚未测量；不能据此推导 B300 吞吐或延迟收益。历史 CPU／ROCm Dockerfile、Python 平台模块、文档与上游 CI 矩阵仍有保留，不再属于本分支支持的构建和验收路径。
 
+## 第六轮：收窄调度与 V2 执行路径
+
+第六轮以 `c2ac6585a3` 为基准，删除 V4.1 不使用的执行分支，保留生成、视觉输入、DSpark、前缀缓存和 KV／encoder 传输。没有改动模型计算、采样算法或 CUDA 内核。
+
+- 调度器移除 Mamba 分块对齐、checkpoint 和 hybrid connector 命中协调；不再每步遍历缓存管理器收集空的 Mamba 边界状态，也不在请求结束时遍历 Mamba partial tails。Connector 的共享消息结构仍保留空边界字段，通用 CoW 与缓存清零保持原逻辑。
+- 调度器、V2 runner、EC connector 和预热移除 encoder-decoder 的交叉注意力特例。V4.1 的视觉 encoder、图像 embedding、encoder cache，以及独立视觉编码部署继续保留。
+- V2 runner 移除 Mamba SSU 初始化、空 pre/post hooks、专属 metadata 复用及 profiling 清理。模型状态入口仅接受 V4.1 自带状态；删除无运行时消费者的 encoder-decoder、BERT encoder-only、Mamba hybrid 和 RecoverSSM 状态模块。V4.1 的 Engram、SWA replay、环形缓存、PP token 记账和 DSpark lookahead 保留。
+- 编译配置移除 9 个 Mamba／Qwen／GDN／OLMo 分图项，以及 Mamba cache 块数量检查和对应参数。普通 CUDA Graph 模式选择、草稿宽度约束与 V1 的 capture-size 对齐继续保留。
+- 删除已经失效的 `--enable-mamba-shared-prefix-checkpoint` 参数、配置字段及使用说明；同步清理只覆盖已删实现的测试和 CI 引用，保留混合测试文件中的 HiSparse、视觉、CoW 和通用缓存覆盖。
+
+本轮没有关闭 pooling／embedding 转换，没有删除温度、top-k/top-p、惩罚和结构化输出等通用采样能力。旧 V1 runner、底层通用缓存类型、默认状态类的 M-RoPE／视觉 pruning 分支及其他平台配置仍有保留，不能把本轮结果描述为执行层已完全最小化。DSpark 仍依赖 DFlash／EAGLE 共享实现。
+
+通过依赖替身对完整调度器与 KV manager 生产模块做了 108 个旧新行为差分场景，覆盖视觉缓存、前缀缓存、connector、DSpark 调度宽度和缓存清零；按实际编译配置方法检查的 1,152 个配置组合结果一致。这些是无 GPU 的控制流检查，不验证真实张量、内核、模型精度或 B300 性能。
+
+本轮 `vllm/` Python 净减少 1,603 行，包含删除上述 4 个状态模块。113 项专用独立回归通过；4,462 个保留 Python 文件语法解析通过，两份修改过的 CI YAML 解析通过。模型依赖闭包仍保留 174 个文件，没有缺失依赖或待删除候选。依赖 Torch 的完整 scheduler／worker 测试及 GPU 模型评估尚未执行。
+
 ## 可复查的裁剪工具
 
 工具只依赖 Python 标准库与 Git，不导入 Torch 或模型。默认仅审计：

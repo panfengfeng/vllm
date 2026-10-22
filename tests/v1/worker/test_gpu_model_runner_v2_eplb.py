@@ -196,7 +196,6 @@ def test_v2_sample_tokens_runs_eplb_on_non_last_pp_rank(monkeypatch):
 
     def fake_receive(*args, **kwargs):
         events.append("receive")
-        # all_decode_next=True, so model_state.postprocess_state is skipped.
         return True
 
     runner.pp_handler = SimpleNamespace(receive=fake_receive)

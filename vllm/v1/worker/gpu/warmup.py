@@ -10,7 +10,6 @@ import torch
 
 from vllm import PoolingParams, SamplingParams
 from vllm.logger import init_logger
-from vllm.multimodal.inputs import MultiModalFeatureSpec, PlaceholderRange
 from vllm.utils.math_utils import cdiv
 from vllm.v1.core.sched.output import (
     CachedRequestData,
@@ -20,9 +19,7 @@ from vllm.v1.core.sched.output import (
 )
 from vllm.v1.kv_cache_interface import (
     CircularBufferSpec,
-    CrossAttentionSpec,
     KVCacheSpec,
-    MambaSpec,
     UniformTypeKVCacheSpecs,
 )
 from vllm.v1.request import Request
@@ -37,7 +34,6 @@ def _reserved_block_count(
     *,
     num_lookahead_tokens: int,
     max_model_len: int,
-    max_encoder_len: int,
 ) -> int:
     """Number of blocks the scheduler would hold for a request of `num_tokens`.
 
@@ -50,18 +46,8 @@ def _reserved_block_count(
     if isinstance(kvcache_spec, CircularBufferSpec):
         # Circular caches keep one physical ring block for the request lifetime.
         return 1
-    if isinstance(kvcache_spec, CrossAttentionSpec):
-        # Cross-attention blocks cover the encoder sequence only.
-        return cdiv(max_encoder_len, kvcache_spec.block_size)
-    num_speculative_blocks = 0
-    if isinstance(kvcache_spec, MambaSpec):
-        # MambaManager appends speculative running-state blocks in every cache
-        # mode; align mode sizes from the uncapped, lookahead-free token range.
-        num_speculative_blocks = kvcache_spec.num_speculative_blocks
-        if kvcache_spec.mamba_cache_mode == "align":
-            return cdiv(num_tokens, kvcache_spec.block_size) + num_speculative_blocks
     num_tokens = min(num_tokens + num_lookahead_tokens, max_model_len)
-    return cdiv(num_tokens, kvcache_spec.block_size) + num_speculative_blocks
+    return cdiv(num_tokens, kvcache_spec.block_size)
 
 
 def _warmup_block_counter(
@@ -70,7 +56,6 @@ def _warmup_block_counter(
     """Bind `_reserved_block_count` to `model_runner`'s reservation policy."""
     num_lookahead_tokens = model_runner.vllm_config.num_lookahead_tokens
     max_model_len = model_runner.max_model_len
-    max_encoder_len = getattr(model_runner.model_state, "max_encoder_len", 0)
 
     def block_count(num_tokens: int, kvcache_spec: KVCacheSpec) -> int:
         return _reserved_block_count(
@@ -78,7 +63,6 @@ def _warmup_block_counter(
             kvcache_spec,
             num_lookahead_tokens=num_lookahead_tokens,
             max_model_len=max_model_len,
-            max_encoder_len=max_encoder_len,
         )
 
     return block_count
@@ -274,22 +258,6 @@ def _warmup_kernels(
     kv_cache_groups = model_runner.kv_cache_config.kv_cache_groups
     num_kv_cache_groups = len(kv_cache_groups)
 
-    # Encoder-decoder models: give each warmup request a dummy encoder input so
-    # cross-attention warms up over a realistic, non-empty key sequence.
-    # The dummy mm_feature is registered in the encoder cache and only its encoder
-    # length is read (not the inputs themselves); the encoder itself is not scheduled.
-    max_encoder_len = getattr(model_runner.model_state, "max_encoder_len", 0)
-    warmup_mm_features: list[MultiModalFeatureSpec] = []
-    if model_runner.is_encoder_decoder and max_encoder_len:
-        warmup_mm_features = [
-            MultiModalFeatureSpec(
-                data=None,
-                modality="",
-                identifier="_warmup_encoder",
-                mm_position=PlaceholderRange(offset=0, length=max_encoder_len),
-            )
-        ]
-
     # Compute per-request block counts for each KV cache group.
     block_count = _warmup_block_counter(model_runner)
     kv_cache_specs = [g.kv_cache_spec for g in kv_cache_groups]
@@ -348,7 +316,7 @@ def _warmup_kernels(
                 prompt_token_ids,
                 sampling_params,
                 pooling_params,
-                mm_features=warmup_mm_features,
+                mm_features=[],
             ),
             block_ids=tuple(_alloc_blocks(n) for n in prefill_block_counts),
             prefill_token_ids=prompt_token_ids,

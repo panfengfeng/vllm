@@ -34,7 +34,6 @@ def test_non_last_pp_rank_uses_global_batch_for_sample_feedback():
     )
     runner.pp_handler = SimpleNamespace(receive=Mock(return_value=False))
     runner.postprocess_num_computed_tokens = Mock()
-    runner.model_state = SimpleNamespace(postprocess_state=Mock())
     runner.kv_connector = SimpleNamespace(post_forward=Mock(return_value=None))
     runner.eplb = SimpleNamespace(step=Mock())
     runner.execute_model_state = ExecuteModelState(
@@ -54,16 +53,12 @@ def test_non_last_pp_rank_uses_global_batch_for_sample_feedback():
 
     runner.pp_handler.receive.assert_called_once_with(global_batch)
     runner.postprocess_num_computed_tokens.assert_called_once_with(global_batch)
-    runner.model_state.postprocess_state.assert_called_once_with(
-        global_batch.idx_mapping, 0
-    )
     runner.pcp_manager.restore_for_sampling.assert_not_called()
 
 
 def test_qsa_circular_group_uses_custom_slot_mapping(monkeypatch):
     runner = GPUModelRunner.__new__(GPUModelRunner)
     runner.max_model_len = 262144
-    runner.is_encoder_decoder = False
     runner.dcp_size = 1
     runner.dcp_rank = 0
     runner.cp_interleave = 1
@@ -151,79 +146,27 @@ def test_qsa_circular_group_uses_custom_slot_mapping(monkeypatch):
     assert captured["slot_mapping_enabled"] == [False, True]
 
 
-@pytest.mark.parametrize(
-    ("mamba_cache_mode", "num_speculative_blocks", "expected"),
-    [
-        pytest.param("align", 0, 65_536, id="align-prefix-cache"),
-        pytest.param("none", 7, 8, id="no-prefix-cache-with-speculation"),
-    ],
-)
-def test_initialize_kv_cache_does_not_dcp_shard_mamba_block_table(
-    monkeypatch,
-    mamba_cache_mode: str,
-    num_speculative_blocks: int,
-    expected: int,
-):
-    """Mamba/GDN block-table rows index global positions, unlike DCP KV."""
-    max_model_len = 1_048_576
-    attention_block_size = 1_536
-    mamba_block_size = 16
-    dcp_size = 8
-    full_attention_spec = FullAttentionSpec(
-        block_size=attention_block_size,
-        num_kv_heads=1,
-        head_size=1,
-        dtype=torch.bfloat16,
-    )
-    mamba_spec = MambaSpec(
+@pytest.mark.parametrize("mamba_cache_mode", ["none", "align"])
+def test_initialize_kv_cache_rejects_mamba_state(mamba_cache_mode: str):
+    """Reject unsupported recurrent state before allocating GPU block tables."""
+    spec = MambaSpec(
         shapes=((1,),),
         dtypes=(torch.bfloat16,),
-        block_size=mamba_block_size,
+        block_size=16,
         mamba_cache_mode=mamba_cache_mode,
-        num_speculative_blocks=num_speculative_blocks,
+        num_speculative_blocks=3,
     )
     kv_cache_config = KVCacheConfig(
         num_blocks=1,
         kv_cache_tensors=[],
-        kv_cache_groups=[
-            KVCacheGroupSpec(["attention"], full_attention_spec),
-            KVCacheGroupSpec(["kda"], mamba_spec),
-        ],
-    )
-    parallel_config = SimpleNamespace(
-        decode_context_parallel_size=dcp_size,
-        cp_kv_cache_interleave_size=1,
-    )
-    vllm_config = SimpleNamespace(
-        parallel_config=parallel_config,
-        cache_config=SimpleNamespace(mamba_cache_mode=mamba_cache_mode),
+        kv_cache_groups=[KVCacheGroupSpec(["kda"], spec)],
     )
     runner = SimpleNamespace(
-        max_model_len=max_model_len,
-        is_encoder_decoder=False,
-        vllm_config=vllm_config,
-        parallel_config=parallel_config,
+        parallel_config=SimpleNamespace(cp_kv_cache_interleave_size=1),
     )
 
-    class _CapturedWidths(Exception):
-        pass
-
-    captured: list[int] = []
-
-    def capture_width(max_num_blocks: int, *_args, **_kwargs) -> int:
-        captured.append(max_num_blocks)
-        if len(captured) == 2:
-            raise _CapturedWidths
-        return max_num_blocks
-
-    monkeypatch.setattr(model_runner_module, "get_block_table_width", capture_width)
-
-    with pytest.raises(_CapturedWidths):
+    with pytest.raises(ValueError, match="Mamba/GDN KV state"):
         GPUModelRunner.initialize_kv_cache(runner, kv_cache_config)
-
-    # Attention KV is local to one of eight DCP ranks; KDA state is replicated
-    # and therefore needs one table entry for every global 16-token page.
-    assert captured == [86, expected]
 
 
 def test_append_block_ids_rejects_write_past_row_capacity():

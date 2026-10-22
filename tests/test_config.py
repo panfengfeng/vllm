@@ -1083,39 +1083,6 @@ def test_late_piecewise_restrictions_without_compilation(monkeypatch, engine_kwa
     assert config.compilation_config.max_cudagraph_capture_size == 0
 
 
-def test_resolve_cudagraph_mode_skips_mamba_block_check_while_profiling():
-    """Cudagraph memory profiling uses a minimal KV cache, so the Mamba
-    block-count guard must only fire for the real cache sizing."""
-    kv_cache_config = SimpleNamespace(has_mamba_layers=True, num_blocks=4)
-
-    compilation_config = CompilationConfig(
-        cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE,
-    )
-    with pytest.raises(ValueError, match="exceeds available Mamba cache blocks"):
-        compilation_config.resolve_cudagraph_mode_and_sizes(
-            AttentionCGSupport.ALWAYS,
-            "FakeAttentionBackend",
-            uniform_decode_query_len=1,
-            use_v2_model_runner=True,
-            kv_cache_config=kv_cache_config,
-            max_num_reqs=256,
-        )
-
-    compilation_config = CompilationConfig(
-        cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE,
-    )
-    cudagraph_mode = compilation_config.resolve_cudagraph_mode_and_sizes(
-        AttentionCGSupport.ALWAYS,
-        "FakeAttentionBackend",
-        uniform_decode_query_len=1,
-        use_v2_model_runner=True,
-        kv_cache_config=kv_cache_config,
-        max_num_reqs=256,
-        is_profiling=True,
-    )
-    assert cudagraph_mode == CUDAGraphMode.FULL_AND_PIECEWISE
-
-
 @pytest.mark.parametrize(
     ("graph_mode", "should_raise"),
     [

@@ -95,11 +95,7 @@ NO_OP_EC_CONNECTOR = ECConnector()
 def get_ec_connector(
     vllm_config: VllmConfig, encoder_cache: "EncoderCache | None"
 ) -> ECConnector:
-    if (
-        not has_ec_transfer()
-        or vllm_config.model_config.is_encoder_decoder
-        or encoder_cache is None
-    ):
+    if not has_ec_transfer() or encoder_cache is None:
         return NO_OP_EC_CONNECTOR
 
     return ActiveECConnector(vllm_config, encoder_cache.encoder_outputs)

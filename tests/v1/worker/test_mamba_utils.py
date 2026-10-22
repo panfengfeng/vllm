@@ -22,8 +22,6 @@ from vllm.v1.kv_cache_interface import (
     MambaSpec,
     UniformTypeKVCacheSpecs,
 )
-from vllm.v1.worker.gpu.block_table import BlockTables
-from vllm.v1.worker.gpu.model_states.mamba_hybrid import MambaHybridModelState
 from vllm.v1.worker.mamba_utils import (
     MambaCopyBuffers,
     MambaSpecDecodeGPUContext,
@@ -510,13 +508,6 @@ def test_mamba_groups_support_different_state_specs():
     mamba_groups = get_mamba_groups(kv_cache_config)
     assert mamba_groups == {gdn_spec: [0], short_conv_spec: [1]}
 
-    model_state = object.__new__(MambaHybridModelState)
-    model_state._mamba_group_ids = []
-    model_state._mamba_spec = None
-    group_ids, representative_spec = model_state._get_mamba_group_info(kv_cache_config)
-    assert group_ids == [0, 1]
-    assert representative_spec is gdn_spec
-
     cfg = _TestConfig()
     copy_bufs = _make_copy_bufs(cfg, kv_cache_config, torch.device("cpu"))
     assert copy_bufs.src_ptrs.cpu.numel() == cfg.max_num_reqs * 5
@@ -597,14 +588,6 @@ def test_mamba_groups_support_mixed_specs_in_uniform_group():
         short_conv_spec: [0],
     }
 
-    # The group is listed once per spec, so its id must not be repeated.
-    model_state = object.__new__(MambaHybridModelState)
-    model_state._mamba_group_ids = []
-    model_state._mamba_spec = None
-    group_ids, representative_spec = model_state._get_mamba_group_info(kv_cache_config)
-    assert group_ids == [0]
-    assert representative_spec is gdn_spec
-
     cfg = _TestConfig()
     copy_bufs = _make_copy_bufs(cfg, kv_cache_config, torch.device("cpu"))
     assert copy_bufs.mamba_group_ids == [0]
@@ -637,51 +620,6 @@ def test_mamba_groups_support_mixed_specs_in_uniform_group():
     )
     assert ctx.state_group_indices.tolist() == [0, 0, 0, 0, 0]
     assert ctx.state_conv_widths.tolist() == [4, 0, 4, 0, 12]
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA")
-def test_v2_align_ctx_binds_request_slot_tables_for_state_copies():
-    """V2 state copies may run steps after their batch (PP), so they must read
-    the per-request-slot tables; aligned state indices are computed for the
-    current batch and keep reading the gathered tables."""
-    cfg = _TestConfig(num_layers=1)
-    device = torch.device("cuda")
-    kv_cache_config = _make_kv_cache_config(cfg, ["layer_0"])
-    forward_context = {
-        "layer_0": _make_mock_attention(
-            torch.empty(cfg.num_blocks, cfg.conv_width, cfg.conv_inner_dim),
-            torch.empty(cfg.num_blocks, cfg.temporal_state_dim),
-        )
-    }
-    block_tables = BlockTables(
-        block_sizes=[cfg.block_size],
-        max_num_reqs=cfg.max_num_reqs,
-        max_num_batched_tokens=64,
-        max_num_blocks_per_group=[4],
-        device=device,
-        kernel_block_sizes=[cfg.block_size],
-    )
-
-    state = object.__new__(MambaHybridModelState)
-    state._align_mode = True
-    state._mamba_group_ids = []
-    state._mamba_spec = None
-    state._mamba_state_copy_funcs = _COPY_FUNCS
-    state.max_num_reqs = cfg.max_num_reqs
-    state.device = device
-    state.vllm_config = MagicMock()
-    state.vllm_config.compilation_config.static_forward_context = forward_context
-
-    state.initialize_kv_cache(kv_cache_config, block_tables)
-
-    ctx = state._mamba_ctx
-    assert ctx is not None and ctx.is_initialized
-    assert ctx.block_table_ptrs.tolist() == [
-        block_tables.block_tables[0].gpu.data_ptr()
-    ]
-    assert ctx.aligned_index_block_table_ptrs.tolist() == [
-        block_tables.input_block_tables[0].data_ptr()
-    ]
 
 
 # -----------------------------------------------------------------------------

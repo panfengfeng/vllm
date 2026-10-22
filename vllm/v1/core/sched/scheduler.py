@@ -31,10 +31,7 @@ from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.multimodal.encoder_budget import MultiModalBudget
 from vllm.multimodal.utils import get_mm_features_in_window
 from vllm.utils.math_utils import cdiv
-from vllm.v1.core.encoder_cache_manager import (
-    EncoderCacheManager,
-    EncoderDecoderCacheManager,
-)
+from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import KVCacheBlock
@@ -54,12 +51,7 @@ from vllm.v1.core.sched.request_queue import (
 )
 from vllm.v1.core.sched.utils import check_stop, remove_all
 from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
-from vllm.v1.kv_cache_interface import (
-    KVCacheConfig,
-    MambaSpec,
-    get_mamba_prefill_checkpoint_position,
-    is_mamba_prefill_checkpoint_valid,
-)
+from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.perf import ModelMetrics, PerfStats
 from vllm.v1.metrics.stats import (
     KV_FETCH_COMPLETED_WAITING,
@@ -112,7 +104,6 @@ class Scheduler(SchedulerInterface):
                 self.observability_config.kv_cache_metrics_sample,
             )
         self.structured_output_manager = structured_output_manager
-        self.is_encoder_decoder = vllm_config.model_config.is_encoder_decoder
         self.is_mm_encoder_only = vllm_config.is_mm_encoder_only
 
         # include_finished_set controls whether a separate set of finished
@@ -170,9 +161,6 @@ class Scheduler(SchedulerInterface):
         self.requires_kv_delivery = False
         kv_transfer_config = self.vllm_config.kv_transfer_config
         if kv_transfer_config is not None:
-            assert not self.is_encoder_decoder, (
-                "Encoder-decoder models are not currently supported with KV connectors"
-            )
             self.connector = KVConnectorFactory.create_connector(
                 config=self.vllm_config,
                 role=KVConnectorRole.SCHEDULER,
@@ -259,26 +247,13 @@ class Scheduler(SchedulerInterface):
             MultiModalBudget(vllm_config, mm_registry) if supports_mm_inputs else None
         )
 
-        # NOTE: Text-only encoder-decoder models are implemented as
-        # multi-modal models for convenience
-        # Example: https://github.com/vllm-project/bart-plugin
-        if self.is_encoder_decoder:
-            assert mm_budget and len(mm_budget.mm_max_toks_per_item) <= 1, (
-                "Encoder-decoder models are expected to implement the "
-                "multimodal interface with at most one modality."
-            )
-
         self.max_num_encoder_input_tokens = (
             mm_budget.encoder_compute_budget if mm_budget else 0
         )
         encoder_cache_size = mm_budget.encoder_cache_size if mm_budget else 0
         manager_cls_obj = vllm_config.ec_manager_config.get_encoder_cache_manager_obj()
         if manager_cls_obj is None:
-            manager_cls_obj = (
-                EncoderDecoderCacheManager
-                if self.is_encoder_decoder
-                else EncoderCacheManager
-            )
+            manager_cls_obj = EncoderCacheManager
         self.encoder_cache_manager = manager_cls_obj.create_manager(
             cache_size=encoder_cache_size, vllm_config=vllm_config
         )
@@ -340,9 +315,6 @@ class Scheduler(SchedulerInterface):
             hash_block_size=hash_block_size,
             metrics_collector=self.kv_metrics_collector,
             watermark=self.scheduler_config.watermark,
-            enable_mamba_shared_prefix_checkpoint=(
-                self.cache_config.enable_mamba_shared_prefix_checkpoint
-            ),
         )
         # Bind after construction so connectors can access the cache manager.
         if self.connector is not None:
@@ -361,41 +333,7 @@ class Scheduler(SchedulerInterface):
             self.scheduler_config.scheduler_reserve_full_isl
         )
 
-        self.has_mamba_layers = kv_cache_config.has_mamba_layers
         self.needs_kv_cache_zeroing = kv_cache_config.needs_kv_cache_zeroing
-        self.need_mamba_block_aligned_split = (
-            self.has_mamba_layers and self.cache_config.mamba_cache_mode == "align"
-        )
-        # TODO: Support models with multiple Mamba specs that require different
-        # prefill checkpoint alignments instead of selecting the first one.
-        self.mamba_prefill_checkpoint_alignment = next(
-            (
-                group.kv_cache_spec.prefill_checkpoint_alignment
-                for group in kv_cache_config.kv_cache_groups
-                if isinstance(group.kv_cache_spec, MambaSpec)
-            ),
-            None,
-        )
-        self.mamba_has_prefill_checkpoint_blocks = self.has_mamba_layers and all(
-            not isinstance(group.kv_cache_spec, MambaSpec)
-            or group.kv_cache_spec.num_prefill_checkpoint_blocks > 0
-            for group in kv_cache_config.kv_cache_groups
-        )
-        # Fine-grained hits reuse the prompt's hash-aligned Mamba checkpoint.
-        # Split there only if the backend cannot save it within the final chunk.
-        self.mamba_partial_cache_hit = (
-            self.need_mamba_block_aligned_split
-            and self.hash_block_size < self.block_size
-            and self.kv_cache_manager.coordinator.enable_partial_hash_hits
-        )
-        # Opt-in: also stop at the junction, where an eagle sibling resumes. The
-        # manager decides whether it can check-point there (per-group eagle bit,
-        # no MTP re-prefill tail); splitting for a stop it would refuse costs a
-        # forward pass and displaces the block-boundary stop.
-        self.mamba_shared_prefix_checkpoint = (
-            self.mamba_partial_cache_hit
-            and self.kv_cache_manager.mamba_shared_prefix_checkpoint
-        )
 
         # Counts of non-empty steps scheduled / processed. update_from_output
         # is called once per scheduled step in FIFO order, so these stay in sync.
@@ -428,133 +366,6 @@ class Scheduler(SchedulerInterface):
             {} if self.log_stats and self.connector is not None else None
         )
         self._kv_fetch_counts: dict[str, int] = dict.fromkeys(KV_FETCH_STAGES, 0)
-
-    def _mamba_block_aligned_split(
-        self,
-        request: Request,
-        num_new_tokens: int,
-        num_new_local_computed_tokens: int = 0,
-        num_external_computed_tokens: int = 0,
-    ) -> int:
-        """Clip a prefill chunk so it ends where Mamba state must be cached.
-
-        In "align" cache mode reusable SSM states are materialized at block
-        boundaries, plus mandatory early stops (the prompt's partial-tail hash
-        boundary, a detected shared-prefix junction). If a block is larger
-        than the configured prefill chunk limit, intermediate chunks keep
-        private running state until they reach the next cacheable position.
-        """
-        start = (
-            request.num_computed_tokens
-            + num_new_local_computed_tokens
-            + num_external_computed_tokens
-        )
-        # Split only during prefill: `request.num_tokens - 1` extends this to
-        # resumed requests replaying their output tokens.
-        prefill_end = max(request.num_prompt_tokens, request.num_tokens - 1)
-        if start >= prefill_end:
-            return num_new_tokens
-
-        block_size = self.cache_config.block_size
-        # The last block-aligned position whose state can be cached. With
-        # Eagle, FullAttn prunes the last matching block, so back off one
-        # block to avoid a Mamba cache miss.
-        ckpt_block_size = (
-            self.hash_block_size if self.mamba_partial_cache_hit else self.block_size
-        )
-        last_cache_position = get_mamba_prefill_checkpoint_position(
-            request.num_tokens,
-            block_size,
-            self.use_eagle_block_drop,
-        )
-
-        end = start + num_new_tokens
-        checkpoint_position = get_mamba_prefill_checkpoint_position(
-            prefill_end,
-            ckpt_block_size,
-            drop_eagle_block=self.use_eagle_block_drop,
-        )
-        use_internal_checkpoint = (
-            self.mamba_has_prefill_checkpoint_blocks
-            and end >= prefill_end
-            and is_mamba_prefill_checkpoint_valid(
-                query_start=start,
-                query_end=end,
-                checkpoint_position=checkpoint_position,
-                hash_block_size=self.hash_block_size,
-                mamba_block_size=block_size,
-                checkpoint_alignment=self.mamba_prefill_checkpoint_alignment,
-            )
-        )
-        if use_internal_checkpoint:
-            last_cache_position = 0
-        # Invariant: slot p holds the state after exactly (p + 1) * block_size
-        # tokens. State is written at chunk ends, so chunk ends must be block
-        # aligned. Exempt: the prompt's last chunk, whose slot decode advances
-        # to the boundary. A block too wide for one chunk advances sub-block
-        # and re-aligns at the next boundary.
-        if end < prefill_end:
-            max_prefill_tokens = self.max_num_scheduled_tokens
-            long_prefill_threshold = self.scheduler_config.long_prefill_token_threshold
-            if long_prefill_threshold > 0:
-                max_prefill_tokens = min(max_prefill_tokens, long_prefill_threshold)
-            aligned_end = end // block_size * block_size
-            if aligned_end > start or block_size <= max_prefill_tokens:
-                end = aligned_end
-
-        next_block_boundary = (start // block_size + 1) * block_size
-        tail_boundary = (
-            get_mamba_prefill_checkpoint_position(
-                request.num_prompt_tokens,
-                self.hash_block_size,
-                self.use_eagle_block_drop,
-            )
-            if self.mamba_partial_cache_hit and not use_internal_checkpoint
-            else 0
-        )
-        junction = request.shared_prefix_boundary
-        # Block-floored: a sub-block junction's state is not separately cacheable.
-        block_floored = start + (junction - start) // block_size * block_size
-        # Past the prompt the manager writes nothing, so fall back to the
-        # block-floored stop rather than dropping it: a resumed request replaying
-        # output tokens can still observe a junction there.
-        junction_stop = (
-            junction
-            if self.mamba_shared_prefix_checkpoint
-            and junction <= request.num_prompt_tokens
-            else block_floored
-        )
-        stops = (
-            # Same invariant: a chunk starting mid-block stops at the boundary
-            # rather than running past it.
-            next_block_boundary
-            if start % block_size != 0 and not use_internal_checkpoint
-            else 0,
-            # Never run past the last cacheable block boundary mid-chunk.
-            last_cache_position,
-            # Stop at the prompt checkpoint unless the backend saves it internally.
-            tail_boundary
-            if last_cache_position < tail_boundary < request.num_prompt_tokens
-            else 0,
-            # Marconi shared-prefix junction: cache its state so sibling
-            # requests sharing the prefix can reuse it.
-            junction_stop if start < junction < end else 0,
-        )
-        # Stop at the earliest mandatory position strictly inside the chunk.
-        end = min((s for s in stops if start < s < end), default=end)
-        return max(end - start, 0)
-
-    def _get_local_prefix_cache_hit(
-        self, request: Request
-    ) -> tuple[KVCacheBlocks, int, int, bool]:
-        connector = self.connector
-        if connector is not None and connector.supports_divergent_local_hybrid_hits:
-            return self.kv_cache_manager.get_computed_blocks_for_connector(request)
-
-        blocks, num_local, shared_prefix_boundary = (
-            self.kv_cache_manager.get_computed_blocks(request)
-        )
-        return blocks, num_local, shared_prefix_boundary, False
 
     def _reserve_prefill_lookahead(
         self,
@@ -709,12 +520,6 @@ class Scheduler(SchedulerInterface):
                 - self.num_sampled_tokens_per_step,
             )
 
-            # Apply Mamba alignment before encoder caps.
-            if self.need_mamba_block_aligned_split:
-                num_new_tokens = self._mamba_block_aligned_split(
-                    request, num_new_tokens
-                )
-
             # Schedule encoder inputs.
             encoder_inputs_to_schedule = None
             external_load_encoder_input: list[int] = []
@@ -751,9 +556,7 @@ class Scheduler(SchedulerInterface):
                 #    its max_total_tokens or max_model_len.
                 # 2. The encoder budget is exhausted.
                 # 3. The encoder cache is exhausted.
-                # 4. Insufficient budget for a block-aligned chunk in hybrid
-                #    models with mamba cache mode \"align\".
-                # 5. Insufficient budget to keep a multi-module MTP prefill
+                # 4. Insufficient budget to keep a multi-module MTP prefill
                 #    chunk out of the prefill-lookahead window.
                 # NOTE(woosuk): Here, by doing `continue` instead of `break`,
                 # we do not strictly follow the FCFS scheduling policy and
@@ -952,8 +755,7 @@ class Scheduler(SchedulerInterface):
                         new_computed_blocks,
                         num_new_local_computed_tokens,
                         request.shared_prefix_boundary,
-                        hit_diverged,
-                    ) = self._get_local_prefix_cache_hit(request)
+                    ) = self.kv_cache_manager.get_computed_blocks(request)
 
                     # Get externally-cached tokens if using a KVConnector.
                     if self.connector is not None:
@@ -1014,16 +816,6 @@ class Scheduler(SchedulerInterface):
                             load_kv_async = False
                         else:
                             num_external_computed_tokens = ext_tokens
-
-                        if hit_diverged and num_external_computed_tokens == 0:
-                            # No external tokens back the deeper local hit, so its
-                            # resume boundary would have no valid Mamba state.
-                            # Reconcile to the boundary every group agrees on.
-                            (
-                                new_computed_blocks,
-                                num_new_local_computed_tokens,
-                                request.shared_prefix_boundary,
-                            ) = self.kv_cache_manager.get_computed_blocks(request)
 
                         connector_prefix_cache_queries = (
                             request.num_tokens - num_new_local_computed_tokens
@@ -1158,29 +950,6 @@ class Scheduler(SchedulerInterface):
                     num_new_tokens = min(num_new_tokens, request_token_budget)
                     assert num_new_tokens > 0
 
-                    # Apply Mamba alignment before encoder caps.
-                    if self.need_mamba_block_aligned_split:
-                        num_new_tokens = self._mamba_block_aligned_split(
-                            request,
-                            num_new_tokens,
-                            num_new_local_computed_tokens,
-                            num_external_computed_tokens,
-                        )
-                        if num_new_tokens == 0:
-                            break
-                        if (
-                            pad_spec_decode
-                            and num_new_tokens != 1 + self.num_spec_tokens
-                        ):
-                            # Alignment clipped the placeholder rows. The split
-                            # aligns prefill chunks, but the padded tail rows are
-                            # speculative positions, not prefill tokens. A padded
-                            # request must keep all 1 + num_spec rows or the
-                            # sampler's row count stops matching its query rows,
-                            # so drop the padding instead of shortening it.
-                            num_new_tokens = 1
-                            pad_spec_decode = False
-
                     # Schedule encoder inputs.
                     if request.has_encoder_inputs:
                         (
@@ -1215,18 +984,6 @@ class Scheduler(SchedulerInterface):
                     0 if limit_lookahead_tokens else self.num_lookahead_tokens
                 )
 
-                # Determine if we need to allocate cross-attention blocks.
-                num_encoder_tokens = 0
-                if (
-                    self.is_encoder_decoder
-                    and request.has_encoder_inputs
-                    and encoder_inputs_to_schedule
-                ):
-                    num_encoder_tokens = sum(
-                        request.get_num_encoder_embeds(i)
-                        for i in encoder_inputs_to_schedule
-                    )
-
                 reserved_blocks = 0
                 if load_kv_async:
                     # An async load holds its blocks for the whole transfer with
@@ -1255,7 +1012,6 @@ class Scheduler(SchedulerInterface):
                         if load_kv_async and self.connector is not None
                         else ()
                     ),
-                    num_encoder_tokens=num_encoder_tokens,
                     full_sequence_must_fit=self.scheduler_reserve_full_isl,
                     reserved_blocks=reserved_blocks,
                     has_scheduled_reqs=bool(self.running),
@@ -1450,24 +1206,16 @@ class Scheduler(SchedulerInterface):
             self.prev_step_scheduled_req_ids.clear()
             self.prev_step_scheduled_req_ids.update(num_scheduled_tokens.keys())
 
-        # Mamba "align" boundary states must be handed off with exact block ids;
-        # they cannot be reconstructed from a connector's append-only block
-        # table. Drained every step so stale offers cannot accumulate.
-        boundary_state_offloads = self.kv_cache_manager.take_boundary_state_offloads()
-
         kv_connector_block_state = None
         if self.connector is not None:
             # Any request scheduled this step can become a connector job now,
             # not only the ones that were allocated blocks: a store save lands
             # on the step that fills a block, which allocated none.
             block_state_req_ids = set(num_scheduled_tokens)
-            block_state_req_ids.update(
-                req_id for req_id in boundary_state_offloads if req_id in self.requests
-            )
             kv_connector_block_state = KVConnectorBlockState(
                 req_ids=block_state_req_ids,
                 resolve_block_ids=self.kv_cache_manager.get_block_ids,
-                boundary_state_offloads=boundary_state_offloads,
+                boundary_state_offloads={},
             )
 
         kv_cache_block_copies, cow_retained_blocks = (
@@ -1836,10 +1584,6 @@ class Scheduler(SchedulerInterface):
             start=num_computed_tokens,
             end=encoder_window_end,
         )
-        # For encoder-decoder, all inputs sit at start_pos=0, so lo=0 always.
-        if self.is_encoder_decoder:
-            lo = 0
-
         for i in range(lo, hi):
             mm_feature = mm_features[i]
             start_pos = mm_feature.mm_position.offset
@@ -1847,60 +1591,39 @@ class Scheduler(SchedulerInterface):
             num_encoder_embeds = mm_feature.mm_position.get_num_embeds()
             item_identifier = mm_feature.identifier
 
-            if self.is_encoder_decoder and num_computed_tokens > 0:
-                assert start_pos == 0, (
-                    "Encoder input should be processed at the beginning of "
-                    "the sequence when encoder-decoder models are used."
-                )
-                # Encoder input has already been computed
-                # The calculation here is a bit different. We don't turn encoder
-                # output into tokens that get processed by the decoder and
-                # reflected in num_computed_tokens. Instead, start_pos reflects
-                # the position where we need to ensure we calculate encoder
-                # inputs. This should always be 0 to ensure we calculate encoder
-                # inputs before running the decoder.  Once we've calculated some
-                # decoder tokens (num_computed_tokens > 0), then we know we
-                # already calculated encoder inputs and can skip here.
-                continue
-
-            if not self.is_encoder_decoder:
-                # We are not using the encoder cache for encoder-decoder models,
-                # yet.
-                if item_identifier in mm_hashes_to_schedule:
-                    scheduled_num_encoder_embeds = mm_hashes_to_schedule[
-                        item_identifier
-                    ]
-                    if self._reject_on_encoder_cache_embed_mismatch(
-                        request,
-                        i,
-                        item_identifier,
-                        scheduled_num_encoder_embeds,
-                        num_encoder_embeds,
-                    ):
-                        return [], 0, encoder_compute_budget, [], []
-                    # The same encoder input has already been scheduled in the
-                    # current step.
-                    duplicate_encoder_inputs.append(i)
-                    continue
-
-                cached_num_encoder_embeds = (
-                    self.encoder_cache_manager.get_cached_num_encoder_embeds(request, i)
-                )
-                if cached_num_encoder_embeds is not None and (
-                    self._reject_on_encoder_cache_embed_mismatch(
-                        request,
-                        i,
-                        item_identifier,
-                        cached_num_encoder_embeds,
-                        num_encoder_embeds,
-                    )
+            if item_identifier in mm_hashes_to_schedule:
+                scheduled_num_encoder_embeds = mm_hashes_to_schedule[item_identifier]
+                if self._reject_on_encoder_cache_embed_mismatch(
+                    request,
+                    i,
+                    item_identifier,
+                    scheduled_num_encoder_embeds,
+                    num_encoder_embeds,
                 ):
                     return [], 0, encoder_compute_budget, [], []
+                # The same encoder input has already been scheduled in the
+                # current step.
+                duplicate_encoder_inputs.append(i)
+                continue
 
-                if self.encoder_cache_manager.check_and_update_cache(request, i):
-                    # The encoder input is already computed and cached from a
-                    # previous step.
-                    continue
+            cached_num_encoder_embeds = (
+                self.encoder_cache_manager.get_cached_num_encoder_embeds(request, i)
+            )
+            if cached_num_encoder_embeds is not None and (
+                self._reject_on_encoder_cache_embed_mismatch(
+                    request,
+                    i,
+                    item_identifier,
+                    cached_num_encoder_embeds,
+                    num_encoder_embeds,
+                )
+            ):
+                return [], 0, encoder_compute_budget, [], []
+
+            if self.encoder_cache_manager.check_and_update_cache(request, i):
+                # The encoder input is already computed and cached from a
+                # previous step.
+                continue
 
             # If no encoder input chunking is allowed, we do not want to
             # partially schedule a multimodal item. If the scheduled range would
@@ -2527,12 +2250,7 @@ class Scheduler(SchedulerInterface):
             mm_feature = request.mm_features[input_id]
             start_pos = mm_feature.mm_position.offset
             num_tokens = mm_feature.mm_position.length
-            if self.is_encoder_decoder and request.num_computed_tokens > 0:
-                # With Whisper, as soon as we've generated a single token,
-                # we know we're done with the encoder input. Cross Attention
-                # KVs have been calculated and cached already.
-                self._free_encoder_input(request, input_id)
-            elif (
+            if (
                 start_pos + num_tokens + spec_lookahead
                 <= request.num_computed_tokens - request.num_output_placeholders
             ):
@@ -3012,13 +2730,6 @@ class Scheduler(SchedulerInterface):
         if self.connector is None:
             return False, None
 
-        finished_partial_tails: list[tuple[int, int, int]] = []
-        kv_transfer_config = self.vllm_config.kv_transfer_config
-        if kv_transfer_config is not None and kv_transfer_config.is_kv_producer:
-            finished_partial_tails = (
-                self.kv_cache_manager.finalize_partial_tail_offloads(request)
-            )
-
         # Free any out-of-window prefix blocks before we hand the block table to
         # the connector, on the processed-token basis (see `allocate_slots`).
         self.kv_cache_manager.remove_skipped_blocks(
@@ -3033,14 +2744,6 @@ class Scheduler(SchedulerInterface):
             request_id=request.request_id,
             num_computed_tokens=request.num_computed_tokens,
         )
-        partial_tail_delay = False
-        if finished_partial_tails:
-            partial_tail_delay = self.connector.register_finished_partial_tail(
-                request,
-                block_ids,
-                finished_partial_tails,
-            )
-
         if not isinstance(self.connector, SupportsHMA):
             # NOTE(Kuntai): We should deprecate this code path after we enforce
             # all connectors to support HMA.
@@ -3054,7 +2757,7 @@ class Scheduler(SchedulerInterface):
             delay_free, kv_xfer_params = self.connector.request_finished_all_groups(
                 request, block_ids
             )
-        return delay_free or partial_tail_delay, kv_xfer_params
+        return delay_free, kv_xfer_params
 
     def _request_remaining_blocks(self, request: Request) -> int:
         """Blocks `request` still needs to hold its full sequence and be promoted."""

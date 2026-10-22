@@ -42,9 +42,6 @@ from vllm.distributed.parallel_state import get_dcp_group, get_pp_group
 from vllm.forward_context import BatchDescriptor, set_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe.all2all_utils import get_ep_all2all_manager
-from vllm.model_executor.layers.mamba.ops.ssu_dispatch import (
-    initialize_mamba_ssu_backend,
-)
 from vllm.model_executor.model_loader import get_model_loader
 from vllm.model_executor.models.interfaces import requires_raw_input_tokens
 from vllm.model_executor.offloader import (
@@ -219,7 +216,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.max_model_len = self.model_config.max_model_len
         self.max_num_tokens = self.scheduler_config.max_num_batched_tokens
         self.max_num_reqs = self.scheduler_config.max_num_seqs
-        self.is_encoder_decoder = self.model_config.is_encoder_decoder
 
         self.output_copy_stream = torch.cuda.Stream(self.device)
 
@@ -605,16 +601,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         kv_cache_config = deepcopy(kv_cache_config)
         self.kv_cache_config = kv_cache_config
 
-        block_table_max_model_len = self.max_model_len
-        if self.is_encoder_decoder:
-            # Cross-attention block tables need to index encoder tokens, which
-            # can exceed the decoder's max_model_len.
-            block_table_max_model_len = max(
-                block_table_max_model_len,
-                self.scheduler_config.max_num_encoder_input_tokens,
-                getattr(self.model_config.hf_config, "max_source_positions", 0),
-            )
-
         block_sizes = []
         max_num_blocks_per_group = []
         slot_mapping_enabled = []
@@ -625,12 +611,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             layer_spec = (
                 spec.first_spec if isinstance(spec, UniformTypeKVCacheSpecs) else spec
             )
+            if isinstance(layer_spec, MambaSpec):
+                raise ValueError("This build does not support Mamba/GDN KV state.")
             slot_mapping_enabled.append(layer_spec.uses_slot_mapping)
             dcp_sharded.append(spec.dcp_sharded)
-            # Let each cache type account for CP. Attention KV is DCP-sharded,
-            # while Mamba/GDN recurrent state is replicated across DCP ranks.
             max_num_blocks = spec.max_num_blocks_per_req(
-                self.vllm_config, block_table_max_model_len
+                self.vllm_config, self.max_model_len
             )
             # Preserve each cache type's alignment requirements after applying
             # its topology-aware block-table width.
@@ -712,11 +698,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         )
         if self.speculator is not None:
             self.speculator.pcp_manager = self.pcp_manager
-        initialize_mamba_ssu_backend(
-            self.vllm_config.mamba_config,
-            self.kv_cache_config,
-            use_replayssm=self.cache_config.use_replayssm,
-        )
         piecewise_capture_available = bool(
             envs.VLLM_USE_BREAKABLE_CUDAGRAPH or has_compiled_submodule(self.model)
         )
@@ -730,9 +711,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             attn_cg_support.min_cg_attn_backend,
             self.decode_query_len,
             use_v2_model_runner=True,
-            kv_cache_config=self.kv_cache_config,
-            max_num_reqs=self.max_num_reqs,
-            is_profiling=is_profiling,
             piecewise_capture_available=piecewise_capture_available,
         )
         self.cudagraph_manager = ModelCudaGraphManager(
@@ -1687,10 +1665,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.req_states.total_len.gpu,
         )
 
-        self.model_state.postprocess_state(
-            idx_mapping, num_sampled, self.req_states.num_computed_tokens.gpu
-        )
-
     def _merge_ec_connector_no_forward(
         self, scheduler_output: SchedulerOutput, output: ModelRunnerOutput
     ) -> ModelRunnerOutput:
@@ -1758,13 +1732,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 self.lora_config, self.lora_state, req_ids, dummy_run
             )
 
-        skip_compiled = False
-        if self.is_encoder_decoder and scheduler_output.scheduled_encoder_inputs:
-            # Encoder-decoder models such as Whisper should run eager/non-compiled
-            # when encoder inputs are scheduled, because this step updates
-            # cross-attention cache with dynamic encoder outputs.
-            skip_compiled = True
-
         batch_desc, dp_sync = dispatch_cg_and_sync_dp(
             self.cudagraph_manager,
             num_reqs,
@@ -1773,7 +1740,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.dp_size,
             self.dp_rank,
             max_query_len=max_query_len,
-            need_eager=is_profile or skip_compiled,
+            need_eager=is_profile,
             num_active_loras=num_active_loras,
             parallel_config=self.parallel_config,
             allow_ubatching=(
@@ -1798,17 +1765,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 scheduler_output, batch_req_state, batch_desc, num_active_loras
             )
             block_tables, slot_mappings = self.prepare_attn(input_batch)
-            # Mamba "align" pre-copy: migrate recurrent state across block
-            # boundaries before the forward. Runs only on real batches, and
-            # before model_state.prepare_attn gathers num_accepted_tokens so the
-            # boundary reset is visible to the attention metadata.
-            self.model_state.preprocess_state(
-                input_batch,
-                block_tables,
-                self.kv_cache_config,
-                self.req_states.num_computed_tokens.gpu,
-            )
-
             if self.lora_config:
                 # Activate LoRA adapters.
                 lora_inputs = self.lora_state.make_lora_inputs(
@@ -1887,20 +1843,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 slot_mappings, self.kv_cache_config
             )
             assert block_tables is not None
-            attn_groups = self.attn_groups
-            if dummy_run and is_profile:
-                # Mamba layers take a cheap warmup path with no metadata;
-                # attention metadata is still built so those kernels tune.
-                attn_groups = [
-                    [g for g in groups if not isinstance(g.kv_cache_spec, MambaSpec)]
-                    for groups in attn_groups
-                ]
             attn_metadata = self.model_state.prepare_attn(
                 input_batch,
                 batch_desc.cg_mode,
                 block_tables,
                 slot_mappings,
-                attn_groups,
+                self.attn_groups,
                 self.kv_cache_config,
                 # FULL replay reads capture-time metadata buffers. Re-stage them
                 # from the zeroed dummy block tables instead of retaining state
@@ -2013,7 +1961,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 batch_descriptor=batch_descriptor,
                 ubatch_slices=ubatch_slices,
                 slot_mapping=slot_mappings_by_layer,
-                skip_compiled=skip_compiled,
                 is_padding=input_batch.is_padding,
             ):
                 self.kv_connector.pre_forward(**connector_kwargs)
@@ -2120,15 +2067,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             if self.pcp_manager is not None:
                 input_batch = self.pcp_manager.global_batch
             assert self.pp_handler is not None
-            all_decode_next = self.pp_handler.receive(input_batch)
+            self.pp_handler.receive(input_batch)
             # Optimistically update num_computed_tokens for entire batch here.
             # Will be adjusted for rejections if necessary in update_requests.
             self.postprocess_num_computed_tokens(input_batch)
-            if not all_decode_next:
-                # Might contain non-final prefill chunks, which will be scheduled
-                # in the immediate next step (rather than in pp_size steps).
-                self.model_state.postprocess_state(input_batch.idx_mapping, 0)
-
             # Post-step KV connector related operations.
             kv_connector_output = self.kv_connector.post_forward(finished_req_ids)
             # The first PP rank holds the encoder cache, so pass its EC output on.

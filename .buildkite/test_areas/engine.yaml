@@ -115,13 +115,13 @@ steps:
     - vllm/v1/
     - tests/v1/e2e/general/
   commands:
-    - pytest -v -s v1/e2e/general --ignore v1/e2e/general/test_async_scheduling.py --ignore v1/e2e/general/test_async_scheduling_accuracy.py --ignore v1/e2e/general/test_kv_sharing_fast_prefill.py -k "not test_mamba_prefix_cache_mrv2"
+    - pytest -v -s v1/e2e/general --ignore v1/e2e/general/test_async_scheduling.py --ignore v1/e2e/general/test_async_scheduling_accuracy.py --ignore v1/e2e/general/test_kv_sharing_fast_prefill.py
   mirror:
     amd:
       label: ":amd: (MI250) E2E Core"
       dind: false
       commands:
-      - pytest -v -s v1/e2e/general --ignore v1/e2e/general/test_async_scheduling.py --ignore v1/e2e/general/test_async_scheduling_accuracy.py --ignore v1/e2e/general/test_kv_sharing_fast_prefill.py -k "not test_mamba_prefix_cache_mrv2"
+      - pytest -v -s v1/e2e/general --ignore v1/e2e/general/test_async_scheduling.py --ignore v1/e2e/general/test_async_scheduling_accuracy.py --ignore v1/e2e/general/test_kv_sharing_fast_prefill.py
       device: mi250_1
       timeout_in_minutes: 50
       depends_on:
@@ -131,7 +131,7 @@ steps:
       - tests/v1/e2e/general/
       - vllm/platforms/rocm.py
 
-# Keep the large Gemma-3n and Mamba MRV2 warmup allocations on 35GB slices.
+# Keep the large Gemma-3n warmup allocations on 35GB slices.
 - label: ":nvidia: (H200 MIG 35GB) E2E Core Large Memory"
   device: h200_35gb
   key: e2e-core-large-memory
@@ -141,7 +141,6 @@ steps:
     - tests/v1/e2e/general/
   commands:
     - pytest -v -s v1/e2e/general/test_kv_sharing_fast_prefill.py
-    - pytest -v -s v1/e2e/general/test_mamba_prefix_cache.py::test_mamba_prefix_cache_mrv2 v1/e2e/general/test_mamba_prefix_cache.py::test_mamba_prefix_cache_mrv2_async
   mirror:
     amd:
       label: ":amd: (MI355 DPX) E2E Core Large Memory"
@@ -158,7 +157,6 @@ steps:
       - vllm/platforms/rocm.py
       commands:
       - pytest -v -s v1/e2e/general/test_kv_sharing_fast_prefill.py
-      - pytest -v -s v1/e2e/general/test_mamba_prefix_cache.py::test_mamba_prefix_cache_mrv2 v1/e2e/general/test_mamba_prefix_cache.py::test_mamba_prefix_cache_mrv2_async
 
 - label: ":nvidia: (H100) ReplaySSM E2E"
   device: h100

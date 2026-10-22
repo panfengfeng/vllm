@@ -27,7 +27,6 @@ from vllm.utils.torch_utils import is_torch_equal_or_newer
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.v1.attention.backend import AttentionCGSupport
-    from vllm.v1.kv_cache_interface import KVCacheConfig
 else:
     VllmConfig = object
 
@@ -768,17 +767,6 @@ class CompilationConfig:
     _attention_ops: ClassVar[list[str]] = [
         "vllm::unified_attention_with_output",
         "vllm::unified_mla_attention_with_output",
-        "vllm::mamba_mixer2",
-        "vllm::short_conv",
-        # Qwen4Exp's AMD backend still uses these splitting ops.
-        "vllm::qwen4_exp_ple_short_conv",
-        "vllm::qwen4_exp_qsa_with_output",
-        # The fused prepare calls this op instead of the one above.
-        "vllm::qwen4_exp_qsa_prepare_with_output",
-        "vllm::linear_attention",
-        "vllm::qwen_gdn_attention_core",
-        "vllm::gdn_attention_core_xpu",
-        "vllm::olmo_hybrid_gdn_full_forward",
         "vllm::sparse_attn_indexer",
         "vllm::rocm_aiter_sparse_attn_indexer",
         "vllm::deepseek_v4_attention",
@@ -1370,9 +1358,6 @@ class CompilationConfig:
         min_cg_attn_backend: str | None,
         uniform_decode_query_len: int = 1,
         use_v2_model_runner: bool = False,
-        kv_cache_config: "KVCacheConfig | None" = None,
-        max_num_reqs: int | None = None,
-        is_profiling: bool = False,
         piecewise_capture_available: bool = True,
     ) -> CUDAGraphMode:
         from vllm.v1.attention.backend import AttentionCGSupport
@@ -1497,30 +1482,6 @@ class CompilationConfig:
             and uniform_decode_query_len > 1
         ):
             self.adjust_cudagraph_sizes_for_spec_decode(uniform_decode_query_len)
-
-        # For Mamba models with FULL decode cudagraphs, each decode
-        # sequence needs one Mamba cache block. The decode cudagraph
-        # dispatcher already caps batch sizes at max_num_seqs, so we just
-        # need to verify that enough blocks exist. Raising here instead
-        # of silently capping cudagraph_capture_sizes avoids unintended
-        # restrictions on PIECEWISE (prefill) cudagraphs.
-        # See: https://github.com/vllm-project/vllm/issues/34094
-        if (
-            kv_cache_config is not None
-            and max_num_reqs is not None
-            and cudagraph_mode.has_full_cudagraphs()
-            and not is_profiling
-            and kv_cache_config.has_mamba_layers
-            and max_num_reqs > kv_cache_config.num_blocks
-        ):
-            raise ValueError(
-                f"max_num_seqs ({max_num_reqs}) exceeds available Mamba cache "
-                f"blocks ({kv_cache_config.num_blocks}). Each decode sequence "
-                "requires one Mamba cache block, so CUDA graph capture cannot "
-                "proceed. Please lower max_num_seqs to at most "
-                f"{kv_cache_config.num_blocks} or increase "
-                "gpu_memory_utilization."
-            )
 
         self.cudagraph_mode = cudagraph_mode
         return cudagraph_mode
